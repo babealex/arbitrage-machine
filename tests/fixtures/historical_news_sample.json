@@ -1,0 +1,16 @@
+[
+  {
+    "external_id": "sample-1",
+    "timestamp": "2026-03-17T13:30:00+00:00",
+    "headline": "US CPI hotter than expected as core prices accelerate",
+    "source": "fixture",
+    "body": "Inflation data came in hotter than expected and Treasury yields rose."
+  },
+  {
+    "external_id": "sample-2",
+    "timestamp": "2026-03-17T15:00:00+00:00",
+    "headline": "Middle East conflict pushes oil prices higher",
+    "source": "fixture",
+    "body": "Energy markets rose after reports of supply risk in the region."
+  }
+]

@@ -1,0 +1,14 @@
+[Unit]
+Description=Arbitrage Machine
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/arbitrage-machine
+ExecStart=/opt/arbitrage-machine/.venv/bin/python -m app.main
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/arbitrage-machine/.env
+
+[Install]
+WantedBy=multi-user.target
