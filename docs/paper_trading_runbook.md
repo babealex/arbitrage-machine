@@ -23,7 +23,10 @@ This repo is approved for paper research and limited paper trading only under th
    - `data/`
    - `logs/`
    - `data/research/historical/`
-3. Confirm disk headroom is available before replay or long paper runs.
+   - `data/runtime_status.json`
+3. Run:
+   - `python -m app.preflight`
+4. Confirm disk headroom is available before replay or long paper runs.
 4. Confirm the latest validation baseline still passes:
    - runtime imports
    - persistence repo tests
@@ -59,6 +62,7 @@ Do not run paper trading if any of the following are true:
 - report JSON
 - SQLite DB
 - structured log
+- runtime status artifact
 - run manifest with execution-model identity
 - append-only event paper execution audit rows
 
@@ -72,6 +76,7 @@ Stop the paper run immediately if:
 - passive orders start filling without a crossing rule
 - replay starts using next-session bars for intraday horizons
 - data store writes fail repeatedly
+- `runtime_status.json` stops updating or reports `state=error`
 
 ## Baseline Expectations
 
@@ -83,3 +88,10 @@ The hardened baseline is intentionally harsh:
 - paper PnL should be materially lower than the legacy optimistic path
 
 If a new change improves paper results without a clear structural reason, assume the change is lying until proven otherwise.
+
+## Unattended Operation Notes
+
+- `runtime_status.json` is the first file to inspect on restart or after a suspected stall.
+- `last_successful_cycle_utc` should advance every healthy loop.
+- `last_error_message` should be empty during steady-state operation.
+- If preflight fails on disk headroom, fix storage first. Do not suppress the check to force a long run.

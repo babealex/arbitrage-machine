@@ -4,6 +4,7 @@ import json
 import time
 from datetime import datetime, timezone
 
+from app.common.runtime_health import assert_runtime_headroom, run_startup_checks, write_runtime_status
 from app.classification.service import EventClassifier
 from app.config import Settings
 from app.db import Database
@@ -29,6 +30,26 @@ CONFIRMATION_SYMBOLS = ["SPY", "QQQ", "TLT", "BTC-USD", "^VIX", "CL=F", "XLE", "
 
 def run_event_driven(settings: Settings) -> None:
     logger = setup_logging(settings)
+    startup_check = run_startup_checks(settings, "event_driven")
+    for warning in startup_check.warnings:
+        logger.warning("startup_validation_warning", extra={"event": {"warning": warning}})
+    if startup_check.errors:
+        write_runtime_status(
+            settings,
+            "event_driven",
+            "startup_failed",
+            message=",".join(startup_check.errors),
+            details=startup_check.details,
+            startup_check=startup_check,
+        )
+        raise RuntimeError(f"event_driven_startup_failed:{','.join(startup_check.errors)}")
+    write_runtime_status(
+        settings,
+        "event_driven",
+        "starting",
+        details=startup_check.details,
+        startup_check=startup_check,
+    )
     db = Database(settings.db_path)
     repo = EventRepository(db)
     reporting_repo = ReportingRepository(db)
@@ -174,6 +195,7 @@ def run_event_driven(settings: Settings) -> None:
 
     while True:
         try:
+            disk_headroom = assert_runtime_headroom(settings)
             for key in list(cycle_stats):
                 cycle_stats[key] = 0
             items = ingestion.poll()
@@ -187,10 +209,23 @@ def run_event_driven(settings: Settings) -> None:
             )
             cycle_stats["closed_positions"] = execution.close_due_positions(logger)
             reporter.write({"event_driven_loop_stats": cycle_stats})
-            settings.heartbeat_path.write_text(str(int(time.time())), encoding="utf-8")
+            write_runtime_status(
+                settings,
+                "event_driven",
+                "running",
+                details={"disk_headroom": disk_headroom, "cycle_stats": cycle_stats},
+                update_heartbeat=True,
+            )
             logger.info("event_driven_cycle_status", extra={"event": cycle_stats})
         except Exception as exc:
             logger.error("event_driven_cycle_error", extra={"event": {"error": str(exc)}})
+            write_runtime_status(
+                settings,
+                "event_driven",
+                "error",
+                message=str(exc),
+                details={"runtime": "event_driven"},
+            )
         time.sleep(settings.event_poll_interval_seconds)
 
 

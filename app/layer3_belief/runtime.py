@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
+from app.common.runtime_health import assert_runtime_headroom, run_startup_checks, write_runtime_status
 from app.config import Settings
 from app.db import Database
 from app.kalshi.rest_client import KalshiRestClient
@@ -20,6 +21,26 @@ from app.research.outcome_tracker import OutcomeTracker
 
 def run_layer3_belief(settings: Settings) -> None:
     logger = setup_logging(settings)
+    startup_check = run_startup_checks(settings, "belief_layer")
+    for warning in startup_check.warnings:
+        logger.warning("startup_validation_warning", extra={"event": {"warning": warning}})
+    if startup_check.errors:
+        write_runtime_status(
+            settings,
+            "belief_layer",
+            "startup_failed",
+            message=",".join(startup_check.errors),
+            details=startup_check.details,
+            startup_check=startup_check,
+        )
+        raise RuntimeError(f"belief_layer_startup_failed:{','.join(startup_check.errors)}")
+    write_runtime_status(
+        settings,
+        "belief_layer",
+        "starting",
+        details=startup_check.details,
+        startup_check=startup_check,
+    )
     db = Database(settings.db_path)
     repo = BeliefRepository(db)
     reporting_repo = ReportingRepository(db)
@@ -43,6 +64,7 @@ def run_layer3_belief(settings: Settings) -> None:
     )
     while True:
         try:
+            disk_headroom = assert_runtime_headroom(settings)
             due_rows = [dict(row) for row in repo.due_outcomes(datetime.now(timezone.utc).isoformat())]
             due_updates = outcome_tracker.process_due_rows(
                 due_rows,
@@ -111,7 +133,28 @@ def run_layer3_belief(settings: Settings) -> None:
                     "run_start_signal_id": reporting_repo.latest_signal_id(),
                 }
             )
-            settings.heartbeat_path.write_text(str(int(time.time())), encoding="utf-8")
+            write_runtime_status(
+                settings,
+                "belief_layer",
+                "running",
+                details={
+                    "disk_headroom": disk_headroom,
+                    "cycle": {
+                        "markets_seen": len(raw_markets),
+                        "markets_loaded": len(markets),
+                        "belief_rows_collected": len(belief_rows),
+                        "disagreement_rows_collected": len(disagreement_result.rows),
+                    },
+                },
+                update_heartbeat=True,
+            )
         except Exception as exc:
             logger.error("belief_layer_cycle_error", extra={"event": {"error": str(exc)}})
+            write_runtime_status(
+                settings,
+                "belief_layer",
+                "error",
+                message=str(exc),
+                details={"runtime": "belief_layer"},
+            )
         time.sleep(settings.belief_poll_interval_seconds)

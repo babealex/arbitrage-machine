@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -43,8 +44,11 @@ class Settings:
     db_path: Path = field(default_factory=lambda: Path(os.getenv("DB_PATH", "./data/trading.db")))
     log_path: Path = field(default_factory=lambda: Path(os.getenv("LOG_PATH", "./logs/app.log")))
     heartbeat_path: Path = field(default_factory=lambda: Path(os.getenv("HEARTBEAT_PATH", "./data/heartbeat.txt")))
+    runtime_status_path: Path = field(default_factory=lambda: Path(os.getenv("RUNTIME_STATUS_PATH", "./data/runtime_status.json")))
     report_path: Path = field(default_factory=lambda: Path(os.getenv("REPORT_PATH", "./data/paper_report.json")))
     external_cache_path: Path = field(default_factory=lambda: Path(os.getenv("EXTERNAL_CACHE_PATH", "./data/external_fed_cache.json")))
+    minimum_free_disk_bytes: int = field(default_factory=lambda: _get_int("MINIMUM_FREE_DISK_BYTES", 268435456))
+    enforce_disk_headroom: bool = field(default_factory=lambda: _get_bool("ENFORCE_DISK_HEADROOM", True))
     kalshi_api_url: str = field(default_factory=lambda: os.getenv("KALSHI_API_URL", "https://api.elections.kalshi.com/trade-api/v2"))
     kalshi_ws_url: str = field(default_factory=lambda: os.getenv("KALSHI_WS_URL", "wss://api.elections.kalshi.com/trade-api/ws/v2"))
     kalshi_api_key_id: str = field(default_factory=lambda: os.getenv("KALSHI_API_KEY_ID", ""))
@@ -128,6 +132,7 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+        self.runtime_status_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
         self.external_cache_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -141,6 +146,16 @@ class Settings:
             warnings.append("poll_interval_non_positive")
         if self.enable_event_driven_mode and self.event_poll_interval_seconds <= 0:
             warnings.append("event_poll_interval_non_positive")
+        if self.minimum_free_disk_bytes < 0:
+            warnings.append("minimum_free_disk_bytes_negative")
+        if self.minimum_free_disk_bytes > 0:
+            disk_root = self.db_path.anchor or "."
+            try:
+                free_bytes = shutil.disk_usage(disk_root).free
+                if free_bytes < self.minimum_free_disk_bytes:
+                    warnings.append("disk_headroom_below_threshold")
+            except OSError:
+                warnings.append("disk_headroom_unavailable")
         return warnings
 
     @property

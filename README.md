@@ -179,9 +179,10 @@ These are research artifacts for conditional edge discovery, not live signals.
 Short form:
 1. Install dependencies and copy `.env.example` to `.env`
 2. Keep `LIVE_TRADING=false`
-3. Run `python -m app.main`
-4. Verify run manifest, audit rows, and conservative paper fills
-5. Halt immediately on stale data, session violations, missing audit rows, or unrealistic fills
+3. Run `python -m app.preflight`
+4. Run `python -m app.main`
+5. Verify run manifest, audit rows, `runtime_status.json`, and conservative paper fills
+6. Halt immediately on stale data, session violations, missing audit rows, stale `runtime_status.json`, or unrealistic fills
 
 Detailed operator guidance:
 - `docs/paper_trading_runbook.md`

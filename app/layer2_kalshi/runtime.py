@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 from app.alerts.notifier import Notifier
+from app.common.runtime_health import assert_runtime_headroom, run_startup_checks, write_runtime_status
 from app.config import Settings
 from app.db import Database
 from app.execution.router import ExecutionRouter
@@ -35,8 +36,26 @@ from app.strategies.partition import PartitionStrategy
 
 def run_layer2_kalshi(settings: Settings) -> None:
     logger = setup_logging(settings)
-    for warning in settings.validate():
+    startup_check = run_startup_checks(settings, "layer2_kalshi")
+    for warning in startup_check.warnings:
         logger.warning("startup_validation_warning", extra={"event": {"warning": warning}})
+    if startup_check.errors:
+        write_runtime_status(
+            settings,
+            "layer2_kalshi",
+            "startup_failed",
+            message=",".join(startup_check.errors),
+            details=startup_check.details,
+            startup_check=startup_check,
+        )
+        raise RuntimeError(f"layer2_kalshi_startup_failed:{','.join(startup_check.errors)}")
+    write_runtime_status(
+        settings,
+        "layer2_kalshi",
+        "starting",
+        details=startup_check.details,
+        startup_check=startup_check,
+    )
     db = Database(settings.db_path)
     repo = KalshiRepository(db)
     reporting_repo = ReportingRepository(db)
@@ -100,6 +119,7 @@ def run_layer2_kalshi(settings: Settings) -> None:
 
     while True:
         try:
+            disk_headroom = assert_runtime_headroom(settings)
             reconciliation = portfolio.reconcile(repo)
             repo.persist_snapshot(portfolio.snapshot)
             if not reconciliation.success and settings.live_trading:
@@ -347,9 +367,29 @@ def run_layer2_kalshi(settings: Settings) -> None:
                             if not settings.timing_experiment_mode:
                                 router.execute_signal(signal)
             reporter.write(loop_stats)
-            settings.heartbeat_path.write_text(str(int(time.time())), encoding="utf-8")
+            write_runtime_status(
+                settings,
+                "layer2_kalshi",
+                "running",
+                details={
+                    "disk_headroom": disk_headroom,
+                    "loop_stats": {
+                        "markets_seen": loop_stats.get("markets_seen", 0),
+                        "markets_loaded": loop_stats.get("markets_loaded", 0),
+                        "ladders_evaluated": loop_stats.get("ladders_evaluated", 0),
+                    },
+                },
+                update_heartbeat=True,
+            )
         except Exception as exc:
             logger.error("main_loop_error", extra={"event": {"error": str(exc)}})
+            write_runtime_status(
+                settings,
+                "layer2_kalshi",
+                "error",
+                message=str(exc),
+                details={"runtime": "layer2_kalshi"},
+            )
             try:
                 notifier.send("Arbitrage Machine crash", str(exc))
             except Exception:
