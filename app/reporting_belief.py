@@ -5,13 +5,20 @@ from collections import defaultdict
 from datetime import datetime, timezone
 
 
-def belief_layer_summary(belief_rows, disagreement_rows) -> dict:
-    if not belief_rows and not disagreement_rows:
+def belief_layer_summary(belief_rows, disagreement_rows, belief_sources=None, event_definitions=None, cross_market_rows=None) -> dict:
+    cross_market_rows = cross_market_rows or []
+    belief_sources = belief_sources or []
+    event_definitions = event_definitions or []
+    if not belief_rows and not disagreement_rows and not cross_market_rows:
         return {
+            "belief_sources_registered": 0,
+            "event_definitions_registered": 0,
             "belief_snapshots_collected": 0,
             "disagreement_snapshots_collected": 0,
+            "cross_market_disagreements_collected": 0,
             "top_event_groups_by_disagreement_frequency": [],
             "top_families_by_disagreement_magnitude": [],
+            "tradeable_disagreement_rate": 0.0,
             "recent_examples": [],
         }
     disagreement_by_group: dict[str, int] = defaultdict(int)
@@ -34,6 +41,11 @@ def belief_layer_summary(belief_rows, disagreement_rows) -> dict:
         key=lambda item: item["avg_disagreement_magnitude"],
         reverse=True,
     )[:10]
+    all_disagreements = list(disagreement_rows) + list(cross_market_rows)
+    tradeable_count = 0
+    for row in all_disagreements:
+        if row.get("tradeable") or load_metadata(row["metadata_json"]).get("net_disagreement", 0) > 0:
+            tradeable_count += 1
     recent_examples = [
         {
             "timestamp_utc": row["timestamp_utc"],
@@ -44,11 +56,15 @@ def belief_layer_summary(belief_rows, disagreement_rows) -> dict:
             "zscore": row["zscore"],
             "metadata_json": load_metadata(row["metadata_json"]),
         }
-        for row in disagreement_rows[-10:]
+        for row in all_disagreements[-10:]
     ]
     return {
+        "belief_sources_registered": len(belief_sources),
+        "event_definitions_registered": len(event_definitions),
         "belief_snapshots_collected": len(belief_rows),
         "disagreement_snapshots_collected": len(disagreement_rows),
+        "cross_market_disagreements_collected": len(cross_market_rows),
+        "tradeable_disagreement_rate": (tradeable_count / len(all_disagreements)) if all_disagreements else 0.0,
         "top_event_groups_by_disagreement_frequency": [
             {"event_group": event_group, "count": count} for event_group, count in top_groups
         ],
@@ -57,10 +73,12 @@ def belief_layer_summary(belief_rows, disagreement_rows) -> dict:
     }
 
 
-def outcome_tracking_summary(rows) -> dict:
+def outcome_tracking_summary(rows, outcome_realizations=None) -> dict:
+    outcome_realizations = outcome_realizations or []
     if not rows:
         return {
             "tracked_outcomes": 0,
+            "realized_outcomes_logged": len(outcome_realizations),
             "due_vs_populated_coverage": {},
             "scheduler_state_counts": {},
             "observation_source_counts_by_horizon": {},
@@ -244,6 +262,7 @@ def outcome_tracking_summary(rows) -> dict:
     ]
     return {
         "tracked_outcomes": len(rows),
+        "realized_outcomes_logged": len(outcome_realizations),
         "due_vs_populated_coverage": due_vs_populated_coverage,
         "scheduler_state_counts": scheduler_state_counts,
         "observation_source_counts_by_horizon": observation_source_counts_by_horizon,

@@ -12,6 +12,10 @@ def _runtime_name_for_settings(settings) -> str:
         return "event_driven"
     if settings.enable_belief_layer and settings.belief_layer_only_mode:
         return "belief_layer"
+    if settings.enable_portfolio_orchestrator:
+        return "portfolio_orchestrator"
+    if settings.enable_two_sleeve_runtime:
+        return "two_sleeve_paper"
     return "layer2_kalshi"
 
 

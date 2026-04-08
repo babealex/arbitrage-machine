@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.db import Database
-from app.models import Signal, StrategyEvaluation, StrategyName
+from app.execution.models import ExecutionOutcome, SignalLegIntent
+from app.instruments.models import InstrumentRef
+from app.models import Signal, SignalEdge, StrategyEvaluation, StrategyName
 from app.persistence.contracts import (
     BeliefSnapshotRecord,
     CrossMarketSnapshotRecord,
@@ -17,7 +20,9 @@ from app.persistence.contracts import (
 from app.persistence.belief_repo import BeliefRepository
 from app.persistence.kalshi_repo import KalshiRepository
 from app.persistence.reporting_repo import ReportingRepository
+from app.persistence.risk_repo import RiskRepository
 from app.execution.orders import build_order_intent
+from app.risk.models import RiskTransitionEvent
 
 
 def test_kalshi_and_reporting_repositories_round_trip(tmp_path: Path) -> None:
@@ -43,22 +48,92 @@ def test_kalshi_and_reporting_repositories_round_trip(tmp_path: Path) -> None:
             strategy=StrategyName.CROSS_MARKET,
             ticker="FED-1",
             action="buy_yes",
-            probability_edge=0.03,
-            expected_edge_bps=300,
             quantity=2,
-            legs=[{"ticker": "FED-1", "action": "buy", "side": "yes", "price": 40, "tif": "IOC"}],
+            edge=SignalEdge.from_values(
+                edge_before_fees=Decimal("0.0416666667"),
+                edge_after_fees=Decimal("0.0333333333"),
+                fee_estimate=Decimal("0.0083333334"),
+                execution_buffer=Decimal("0.0005"),
+            ),
+            source="cross_market_probability_map",
+            confidence=0.85,
+            priority=2,
+            legs=[SignalLegIntent(InstrumentRef("FED-1", contract_side="yes"), "buy", "limit", Decimal("0.40"), "IOC")],
         )
     )
-    intent = build_order_intent("FED-1", "yes", "buy", 2, 40, "IOC", "repo-test")
+    intent = build_order_intent(
+        instrument=InstrumentRef("FED-1", contract_side="yes"),
+        side="buy",
+        quantity=2,
+        order_type="limit",
+        strategy_name="cross_market",
+        signal_ref="cross_market:FED-1:test",
+        seed="repo-test",
+        limit_price=Decimal("0.40"),
+        time_in_force="IOC",
+    )
     kalshi_repo.persist_order(KalshiOrderRecord(intent=intent, status="created", metadata={"source": "test"}))
 
     assert kalshi_repo.max_evaluation_id() == 1
     assert kalshi_repo.max_signal_id() == 1
+    loaded_signals = kalshi_repo.load_signals()
     kalshi_bundle = reporting_repo.load_kalshi_reporting_bundle()
     assert len(kalshi_bundle.evaluations) == 1
     assert len(kalshi_bundle.signals) == 1
     assert len(kalshi_bundle.orders) == 1
     assert len(kalshi_bundle.order_events) == 1
+    assert loaded_signals[0].edge.edge_after_fees == Decimal("0.0333333333")
+    assert loaded_signals[0].source == "cross_market_probability_map"
+
+
+def test_execution_outcomes_and_risk_events_round_trip(tmp_path: Path) -> None:
+    db = Database(tmp_path / "execution_risk_repo.db")
+    kalshi_repo = KalshiRepository(db)
+    risk_repo = RiskRepository(db)
+
+    intent = build_order_intent(
+        instrument=InstrumentRef("FED-1", contract_side="yes"),
+        side="buy",
+        quantity=2,
+        order_type="limit",
+        strategy_name="cross_market",
+        signal_ref="cross_market:FED-1:test",
+        seed="typed-outcome",
+        limit_price=Decimal("0.40"),
+        time_in_force="IOC",
+    )
+    kalshi_repo.persist_execution_outcome(
+        ExecutionOutcome(
+            client_order_id=intent.order_id,
+            instrument=InstrumentRef("FED-1", contract_side="yes"),
+            side="buy",
+            action="limit",
+            status="simulated",
+            requested_quantity=2,
+            filled_quantity=2,
+            price_cents=40,
+            time_in_force="immediate_or_cancel",
+            is_flatten=False,
+            metadata={"source": "test"},
+        )
+    )
+    risk_repo.persist_transition(
+        RiskTransitionEvent(
+            state="killed",
+            reason="stale_market_data",
+            details={"source": "test"},
+        )
+    )
+
+    outcomes = kalshi_repo.load_execution_outcomes()
+    transitions = risk_repo.load_transitions()
+
+    assert len(outcomes) == 1
+    assert outcomes[0].instrument.symbol == "FED-1"
+    assert outcomes[0].instrument.contract_side == "yes"
+    assert outcomes[0].price_cents == 40
+    assert len(transitions) == 1
+    assert transitions[0].reason == "stale_market_data"
 
 
 def test_belief_repository_due_outcomes_round_trip(tmp_path: Path) -> None:

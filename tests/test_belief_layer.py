@@ -19,8 +19,10 @@ def test_build_kalshi_belief_snapshots_filters_family() -> None:
     )
     rows = build_kalshi_belief_snapshots([market], ["KXECONSTATCPI"])
     assert len(rows) == 1
+    assert rows[0]["source_key"] == "kalshi_event_market"
     assert rows[0]["source_type"] == "kalshi"
-    assert rows[0]["object_type"] == "mean_belief"
+    assert rows[0]["object_type"] == "event_market_probability"
+    assert rows[0]["comparison_metric"] == "probability"
     assert rows[0]["value"] == 0.25
 
 
@@ -36,27 +38,43 @@ def test_disagreement_engine_builds_rows_above_threshold() -> None:
     belief_rows = [
         {
             "timestamp_utc": "2026-03-18T00:00:00+00:00",
+            "source_key": "kalshi_event_market",
+            "event_key": "KXECONSTATCPI-26MAR",
+            "normalized_underlying_key": "macro:inflation",
             "family": "KXECONSTATCPI",
             "event_ticker": "KXECONSTATCPI-26MAR",
             "market_ticker": "KXECONSTATCPI-26MAR-T1.0",
             "source_type": "kalshi",
-            "object_type": "mean_belief",
+            "object_type": "event_market_probability",
+            "comparison_metric": "probability",
             "value": 0.1,
+            "cost_estimate_bps": 35.0,
+            "quality_flags_json": {},
+            "belief_summary_json": {},
             "metadata_json": {},
         }
     ]
     external_rows = [
         {
             "timestamp_utc": "2026-03-18T00:00:00+00:00",
-            "family": "SPY",
-            "event_ticker": "SPY",
-            "market_ticker": "SPY",
-            "source_type": "equity_proxy",
-            "object_type": "risk_proxy",
-            "value": 500.0,
-            "metadata_json": {"rolling_zscore": 2.0},
+            "source_key": "fed_futures",
+            "event_key": "KXECONSTATCPI-26MAR",
+            "normalized_underlying_key": "macro:inflation",
+            "family": "FED",
+            "event_ticker": "fed:2026-03",
+            "market_ticker": "fed:2026-03",
+            "source_type": "fed_futures",
+            "object_type": "policy_path_summary",
+            "comparison_metric": "probability",
+            "value": 0.8,
+            "cost_estimate_bps": 8.0,
+            "quality_flags_json": {},
+            "belief_summary_json": {},
+            "metadata_json": {},
         }
     ]
     result = engine.build(belief_rows, external_rows)
     assert len(result.rows) == 1
-    assert result.rows[0]["event_group"] == "KXECONSTATCPI:KXECONSTATCPI-26MAR"
+    assert result.rows[0]["event_group"] == "macro:inflation:KXECONSTATCPI-26MAR"
+    assert result.rows[0]["tradeable"] is True
+    assert result.rows[0]["net_disagreement"] > 0.2

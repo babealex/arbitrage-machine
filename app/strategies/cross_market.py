@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, timezone
 
-from app.models import Market, OrderBookSnapshot, Signal, StrategyEvaluation, StrategyName
+from app.execution.models import SignalLegIntent
+from app.instruments.models import InstrumentRef
+from app.market_data.fees import balance_aligned_fee_dollars, edge_threshold
+from app.models import Market, OrderBookSnapshot, Signal, SignalEdge, StrategyEvaluation, StrategyName
 from app.strategies.base import Strategy
 
 
@@ -35,51 +39,74 @@ class CrossMarketStrategy(Strategy):
             if remaining < self.min_time_to_expiry_seconds:
                 return [], [self._evaluation(market.ticker, False, "too_close_to_expiry", 0.0, 0.0, 0.0, 0, {"seconds_to_expiry": remaining})]
 
-        yes_exec_prob = market.yes_ask / 100.0
-        no_exec_prob = market.no_ask / 100.0
-        yes_fee = fee_from_probability(yes_exec_prob)
-        no_fee = fee_from_probability(no_exec_prob)
-        yes_edge_before_fees = mapped_probability - yes_exec_prob
-        no_external_prob = 1.0 - mapped_probability
-        no_edge_before_fees = no_external_prob - no_exec_prob
-        yes_edge = yes_edge_before_fees - yes_fee - self.slippage_buffer
-        no_edge = no_edge_before_fees - no_fee - self.slippage_buffer
+        yes_exec_prob = Decimal(market.yes_ask) / Decimal("100")
+        no_exec_prob = Decimal(market.no_ask) / Decimal("100")
+        mapped_probability_decimal = Decimal(str(mapped_probability))
+        yes_fee = balance_aligned_fee_dollars(yes_exec_prob, side="buy")
+        no_fee = balance_aligned_fee_dollars(no_exec_prob, side="buy")
+        yes_gate = edge_threshold(
+            edge_before_fees=mapped_probability_decimal - yes_exec_prob,
+            fee_estimate=yes_fee,
+            execution_buffer=Decimal(str(self.slippage_buffer)),
+        )
+        no_external_prob = Decimal("1") - mapped_probability_decimal
+        no_gate = edge_threshold(
+            edge_before_fees=no_external_prob - no_exec_prob,
+            fee_estimate=no_fee,
+            execution_buffer=Decimal(str(self.slippage_buffer)),
+        )
 
         candidates = [
-            ("buy_yes", yes_edge, yes_edge_before_fees, yes_fee, orderbook.best_yes_ask_size(), "yes", int(market.yes_ask)),
-            ("buy_no", no_edge, no_edge_before_fees, no_fee, orderbook.best_no_ask_size(), "no", int(market.no_ask)),
+            ("buy_yes", yes_gate, orderbook.best_yes_ask_size(), "yes", int(market.yes_ask)),
+            ("buy_no", no_gate, orderbook.best_no_ask_size(), "no", int(market.no_ask)),
         ]
         if not self.directional_allowed:
             candidates = [candidate for candidate in candidates if candidate[0] == "buy_yes"]
-        best_action, best_edge, best_before_fees, fee, depth, leg_side, leg_price = max(candidates, key=lambda item: item[1])
+        best_action, best_gate, depth, leg_side, leg_price = max(candidates, key=lambda item: item[1].edge_after_fees)
         metadata = {
             "mapped_probability": mapped_probability,
-            "kalshi_yes_prob": yes_exec_prob,
-            "kalshi_no_prob": no_exec_prob,
-            "yes_fee": yes_fee,
-            "no_fee": no_fee,
+            "kalshi_yes_prob": float(yes_exec_prob),
+            "kalshi_no_prob": float(no_exec_prob),
+            "yes_fee": float(yes_fee),
+            "no_fee": float(no_fee),
             "slippage_buffer": self.slippage_buffer,
-            "yes_edge": yes_edge,
-            "no_edge": no_edge,
+            "yes_edge": float(yes_gate.edge_after_fees),
+            "no_edge": float(no_gate.edge_after_fees),
+            "yes_edge_before_fees": float(yes_gate.edge_before_fees),
+            "no_edge_before_fees": float(no_gate.edge_before_fees),
             "best_depth": depth,
         }
         if depth < self.min_depth:
-            return [], [self._evaluation(market.ticker, False, "insufficient_depth", best_before_fees, best_edge, fee, 0, metadata)]
-        if best_edge < self.min_edge:
-            return [], [self._evaluation(market.ticker, False, "edge_below_threshold", best_before_fees, best_edge, fee, 0, metadata)]
-        price_prob = yes_exec_prob if best_action == "buy_yes" else no_exec_prob
+            return [], [self._evaluation(market.ticker, False, "insufficient_depth", float(best_gate.edge_before_fees), float(best_gate.edge_after_fees), float(best_gate.fee_estimate), 0, metadata)]
+        if not best_gate.passes_probability(self.min_edge):
+            return [], [self._evaluation(market.ticker, False, "edge_below_threshold", float(best_gate.edge_before_fees), float(best_gate.edge_after_fees), float(best_gate.fee_estimate), 0, metadata)]
+        price_prob = float(yes_exec_prob if best_action == "buy_yes" else no_exec_prob)
         qty = min(self.size_from_equity(equity, self.max_position_pct, price_prob), depth)
         signal = Signal(
-                strategy=StrategyName.CROSS_MARKET,
-                ticker=market.ticker,
-                action=best_action,
-                probability_edge=best_edge,
-                expected_edge_bps=best_edge * 10_000,
-                quantity=qty,
-                legs=[{"ticker": market.ticker, "action": "buy", "side": leg_side, "price": leg_price, "tif": "IOC"}],
-                metadata=metadata,
-            )
-        return [signal], [self._evaluation(market.ticker, True, "signal_generated", best_before_fees, best_edge, fee, qty, metadata)]
+            strategy=StrategyName.CROSS_MARKET,
+            ticker=market.ticker,
+            action=best_action,
+            quantity=qty,
+            edge=SignalEdge.from_values(
+                edge_before_fees=best_gate.edge_before_fees,
+                edge_after_fees=best_gate.edge_after_fees,
+                fee_estimate=best_gate.fee_estimate,
+                execution_buffer=self.slippage_buffer,
+            ),
+            source="cross_market_probability_map",
+            confidence=1.0,
+            priority=1,
+            legs=[
+                SignalLegIntent(
+                    instrument=InstrumentRef(symbol=market.ticker, contract_side=leg_side),
+                    side="buy",
+                    order_type="limit",
+                    limit_price=Decimal(leg_price) / Decimal("100"),
+                    time_in_force="IOC",
+                )
+            ],
+        )
+        return [signal], [self._evaluation(market.ticker, True, "signal_generated", float(best_gate.edge_before_fees), float(best_gate.edge_after_fees), float(best_gate.fee_estimate), qty, metadata)]
 
     def generate(self, market: Market, mapped_probability: float | None, orderbook: OrderBookSnapshot | None, equity: float) -> list[Signal]:
         signals, _ = self.evaluate(market, mapped_probability, orderbook, equity)
@@ -100,4 +127,4 @@ class CrossMarketStrategy(Strategy):
 
 
 def fee_from_probability(probability: float) -> float:
-    return 0.07 * probability * (1.0 - probability)
+    return float(balance_aligned_fee_dollars(Decimal(str(probability)), side="buy"))

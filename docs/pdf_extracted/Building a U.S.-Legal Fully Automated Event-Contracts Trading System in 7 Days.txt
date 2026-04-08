@@ -1,0 +1,705 @@
+Building a U.S.-Legal Fully Automated Event-
+Contracts Trading System in 7 Days
+Executive Summary
+This report designs a single “best V1” automated trading system that is (a) realistically buildable in one week
+by a solo builder , (b) runnable 24/7 on an always-on home computer , (c) deployable from the U.S. on
+regulated venues, and (d) grounded in a mechanical edge rather than “opinions about the world.”
+The key constraint for small capital ($100–$1,000) is fee + spread drag. On Kalshi, taker fees are highest
+near 50/50 and lower toward the edges because the fee formula scales with . The published fee
+schedule gives taker fees as  and maker fees (where applicable) as 
+, rounded up to the next cent.   This makes many “theoretical” prediction-market edges
+non-viable  for  micro  accounts  unless  you  (1)  trade  only  when  mispricings  are  several  cents,  or  (2)
+preferentially provide liquidity rather than cross the spread.
+The single best V1 strategy
+Kalshi “monotonicity arbitrage” on Fed Funds threshold ladders (nested events), implemented as two-
+leg vertical spreads when prices violate basic set-inclusion logic.
+Why this wins for week one:
+It targets a structural inequality that must hold by contract logic (subset events can’t be more likely
+than supersets), rather than relying on a forecast model.
+It is two-leg (not 5–15 legs), which is crucial for reliability under real-world partial fills.
+It naturally focuses on tail / illiquid strikes where stale quotes are most likely; a 2026 Federal
+Reserve  staff paper highlights that the “outermost (tail) contracts often suffer from low trading
+volume,” which can lead to stale pricing, and notes enforcing monotonicity is a practical mitigation
+for tail distortions. 
+It is buildable with Kalshi’s public market data + authenticated trading API, including WebSocket
+order book deltas and order placement with IOC/FOK. 
+The rest of the report supports that choice, compares U.S.-accessible venues, ranks mismatch types, and
+provides exact rules, architecture, a 7‑day plan, and a hostile risk review.
+P(1−P)
+⌈0.07⋅ C⋅ P ⋅ (1−P)⌉ ⌈0.0175⋅ C⋅
+P ⋅ (1−P)⌉ 1
+• 
+• 
+• 
+2
+3
+• 
+4
+1
+
+Platform Comparison
+Legal and regulatory baseline for “U.S.-deployable”
+For U.S. retail automated trading, the safest baseline is: trade on a  CFTC-designated contract market
+(DCM)  with  clearing  via  a  derivatives  clearing  organization (DCO),  within  a  framework  of  federal
+derivatives oversight. 
+Polymarket  note  (because  you  mentioned  it): the  Commodity  Futures  Trading  Commission took
+enforcement action in 2022 against the operator of Polymarket, including a $1.4M penalty and an order to
+wind down noncompliant markets and cease and desist from violations.  That history is why “VPN it” is
+not an acceptable design requirement for a legally deployable system.
+Venue shortlist for U.S. automated event/prediction trading
+Kalshi (direct)
+Regulatory status: KalshiEX LLC is listed by the CFTC as a Designated Contract Market (DCM)
+(designated Nov 2020). 
+API surface (what matters in week one):
+Demo environment with mock funds and separate credentials from production; demo API root is 
+https://demo-api.kalshi.co/trade-api/v2. 
+Public market data without authentication (series / events / markets / orderbooks), so you can
+build your data pipeline before you even have trading permissions live. 
+WebSockets for real-time updates; production endpoint wss://api.elections.kalshi.com/
+trade-api/ws/v2, demo wss://demo-api.kalshi.co/trade-api/ws/v2. 
+WebSocket channels include public ticker, trade, market_lifecycle_v2, and private 
+orderbook_delta, fill, market_positions, etc. 
+Orders: REST order placement supports fill_or_kill, immediate_or_cancel, and 
+good_till_canceled, and includes post_only and buy_max_cost (which forces FOK
+behavior). 
+Batch orders: batch create orders exists, capped by write-rate limits (docs note “at the moment of
+writing, the limit is 20 orders per batch”). 
+Rate limits: Basic tier 20 read/sec and 10 write/sec; higher tiers exist. 
+Microstructure detail you must understand for correct pricing: Kalshi’s orderbook API returns
+bids (yes bids and no bids) and explains that a NO bid implies a YES ask via reciprocity (e.g., “NO bid
+at Y is equivalent to YES ask at 100−Y”). 
+Fees: see fee schedule section above. 
+Collateralization: Kalshi states trades are fully collateralized (you deposit funds and funds remain
+on-platform while holding positions). 
+Bottom line: Best platform to build on in 7 days because the API + demo environment are designed for
+programmatic trading and you can iterate end-to-end quickly. 
+5
+6
+7
+• 
+8
+• 
+• 
+9
+• 
+10
+• 
+11
+• 
+12
+• 
+13
+• 
+14
+• 15
+• 
+16
+• 17
+• 
+18
+19
+2
+
+ForecastEx via Interactive Brokers (IBKR ForecastTrader)
+Regulatory status: ForecastEx received CFTC DCO registration and DCM designation (June 25,
+2024). 
+Retail access path: through Interactive Brokers. IBKR states it provides access to ForecastEx
+forecast contracts for eligible customers and notes the CFTC registrations. 
+Automation: IBKR states both its Web API and TWS API support trading these contracts.  The
+Client Portal Web API is described as supporting HTTP plus asynchronous WebSocket
+communication. 
+Fees/commissions: IBKR’s ForecastTrader marketing indicates Forecast Contracts are offered at zero
+commission at IBKR, and states pricing in $0.02–$0.99 increments (typical). 
+Operational reality: automation is possible, but IBKR system integration is usually heavier (gateway
+sessions, permissions, product discovery workflow modeling event contracts as options/futures
+options). 
+Bottom line: Strong regulated alternative, but the engineering overhead is typically higher than Kalshi for
+a 7‑day solo build. For V1, it is the “plan B” venue, not the fastest-to-deploy.
+CME “Event Contracts” via futures brokers
+The CME Group maintains rulebook chapters for Event Contracts. 
+IBKR also models CME event contracts in its event-contract product support. 
+Bottom  line:  these  are  event-style  instruments,  but  they  behave  more  like  daily  close  over/under
+contracts on financial futures than “macro prediction markets.” They are viable, but they are not the best
+match to your stated focus on event/prediction trading like Kalshi.
+Probability Mismatch Methods Ranked
+Below are the mismatch classes you requested, ranked specifically for (a) 7‑day build, (b) small capital, (c)
+autopilot, and (d) real edge.
+Highest-ranked mismatches
+Monotonicity (stochastic dominance) violations in threshold ladders
+Mechanism: in “exceeds strike” binary ladders, events are nested. If , then .
+When the market violates that inequality by enough to cover fees/spread, you can construct a nonnegative-
+payoff spread.
+Why it’s real: A 2026 Federal Reserve paper describes Kalshi macro contracts as “a series of binary options
+that  pay  $1  if  the  realized  outcome  exceeds  a  specified  strike,”  and  explicitly  notes  monotonicity
+enforcement as a practical fix for tail distortions. 
+Rank attributes: - Ease: high (two-leg, pure order book logic) - Reliability: high (logic-based, not forecast-
+based),  subject  to  fill/settlement  risk  -  Frequency:  moderate  (more  frequent  in  tails/illiquid  strikes)  -
+Scalability: limited by liquidity and fee drag, but workable at small size
+Mutually exclusive partition “Dutch book” opportunities
+Mechanism: for an event with markets that form an exhaustive partition, the sum of YES prices should
+approximate 1 (after microstructure). If you can buy a full set of mutually exclusive outcomes for < $1 net
+• 
+20
+• 21
+22
+• 23
+24
+• 
+25
+• 
+26
+• 27 28
+• 29
+E ⊆k+1 E 
+k P(E ) ≤k+1 P(E )k
+3
+3
+
+fees, you lock profit.
+Engineering note: Kalshi’s events API includes a mutually_exclusive flag in example responses, which
+can help identify partition-like event structures. 
+Rank attributes: - Ease: medium (multi-leg, more fill risk) - Reliability: very high if fully executed - Frequency:
+usually low - Scalability: poor for small accounts unless you find repeated edge
+Mid-ranked mismatches
+Cross-venue “basis” between prediction markets and reference markets
+Examples: Fed Funds futures implied probabilities (CME FedWatch) vs Kalshi Fed decision markets; or similar
+ForecastEx vs Kalshi listings. The CME FedWatch tool explicitly presents probabilities “as implied by 30‑Day
+Fed Funds futures prices,” and CME publishes methodology context. 
+Problem:  differences  can  reflect  risk  premia,  contract  definition  differences,  fees,  and  participant
+composition; the Federal Reserve paper explicitly notes Kalshi prices can reflect risk-neutral probabilities
+and risk premia. 
+Rank attributes: - Ease: medium (need mapping layer + external data) - Reliability: medium - Frequency:
+medium/high - Scalability: limited by hedging feasibility
+Slow vs fast update exploitation (latency arbitrage)
+Mechanism:  a  faster  market  (usually  a  deep  futures/options  venue)  incorporates  news  first;  prediction
+market lags; you trade the lag.
+Rank attributes: - Ease: medium - Reliability: medium/low unless you truly have speed + consistent mapping
+- Frequency: high around data releases - Scalability: limited by competition and slippage
+Lowest-ranked mismatches (for week one)
+Sports / breaking current events “information trading”
+These are the most narrative-driven, most regime-sensitive, and most likely to expose you to unexpected
+regulatory/product changes and discontinuous risk. They can be profitable for specialists, but they are not
+the best “first week” automation target.
+Market Category Recommendation
+You asked for: rates/Fed, CPI, jobs, weather , sports, current events—then which category maximizes solo
+success probability in 7 days.
+What is objectively easiest to automate safely?
+Rates / Fed (Fed funds decision and target range outcomes) are the best category for week one because:
+Clear settlement source and timing: Kalshi’s Fed-related contract terms reference the Federal
+Reserve as the source and specify expiration around statement timing; e.g., “Will the target federal
+funds rate be above/below <percent>?” uses the upper bound of the target range published by the
+Federal Reserve and ties expiration around FOMC statement release timing. 
+Naturally creates nested-threshold structures, enabling monotonicity checks:
+Kalshi may list percent levels at increments of 0.05%. 
+Documented market structure and known weaknesses (tail staleness):
+30
+31
+3
+1. 
+32
+2. 
+3. 32
+4. 
+4
+
+Federal Reserve research explicitly states tail strikes can have stale prices due to low volume and that
+monotonicity enforcement is helpful. 
+Operational cadence: Fed decisions recur regularly; Kalshi describes Fed decision contracts as
+based on a recurrent release on a ~six-week basis. 
+Why not CPI / jobs / weather first?
+CPI and jobs can also be modeled, but for week one you’d be tempted into building a “forecast
+system” (surveys, nowcasts) rather than a mechanical trading edge. The Federal Reserve paper uses
+Bloomberg surprises for analysis, illustrating how quickly forecast plumbing becomes a project. 
+Weather can be “data rich,” but the edge is quickly competed away and contract definitions can be
+tricky across locations; it’s fine later , not first.
+Sports/current events add the most tail/legal/product risk and the least clean statistical stationarity.
+Recommendation: Start with Rates / Fed, specifically Fed funds threshold ladders on Kalshi.
+Best V1 Strategy
+Strategy name
+Kalshi Fed Funds Ladder Monotonicity Arbitrage (Two-leg Vertical Spreads)
+Strategy idea in one sentence
+Identify  nested-threshold  mispricings and  execute  long-cheaper-superset  /  short-expensive-subset
+spreads when the entry credit exceeds all fees and buffers, producing  nonnegative terminal payoff by
+construction.
+The inefficiency you are exploiting
+Kalshi macro markets often exist as many separate binary contracts across strikes; the Federal
+Reserve paper describes this “series of binary options that pay $1 if the realized outcome exceeds a
+specified strike.” 
+In tails and lower-liquidity strikes, quotes can be stale and violate monotonic relationships; the paper
+calls out tail staleness and explicitly discusses enforcing monotonicity. 
+Many participants are not running “constraint satisfaction” arbitrage bots; they place bids/asks on a
+single strike they care about.
+Why it persists
+Fee + spread friction discourages arbitrage unless mispricing is multiple cents. Kalshi’s fee schedule
+makes midpoint trading expensive (fee peaks near 50¢), so small violations may not be worth it for
+many traders. 
+Operational friction: even if a violation exists, capturing it requires automation + correct
+interpretation of the “bids-only / reciprocity” order book representation. 
+5. 
+3
+6. 
+33
+• 
+34
+• 
+• 
+• 
+3
+• 
+3
+• 
+• 
+17
+• 
+16
+5
+
+Who you are exploiting
+Manual traders placing resting orders on single strikes.
+Traders with cognitive or “favorite-longshot” biases (documented for Kalshi pricing in large-sample
+research), especially in tails. 
+Market participants who do not (or cannot) enforce cross-strike constraints.
+Exact Strategy Rules
+This section is intentionally explicit and formulaic, so you can implement it without interpretation.
+Facts vs assumptions
+Facts from primary sources - Kalshi supports REST + WebSockets for real-time market data and trading;
+WebSocket channels include orderbook_delta and fill notifications. 
+- Order creation supports fill_or_kill, immediate_or_cancel, and post_only. 
+- The orderbook returns bids and relies on YES/NO reciprocity (NO bid implies YES ask). 
+- Taker fee formula is  (rounded up to next cent). 
+- Kalshi “FED” contracts reference the upper bound of the FFR target range and list percent levels in 0.05%
+increments (at Kalshi’s discretion). 
+Assumptions you must verify in your own live observation (demo → production) - Which specific series
+tickers correspond to Fed funds threshold ladders you can trade today (discoverable via /series and /
+markets?series_ticker=). 
+- Real liquidity and how often monotonicity violations exceed fee+spread thresholds.
+Universe definition
+Use Kalshi series discovery:
+Pull series list by category/tag if desired (GET /series), and select the Fed-related series manually
+for V1. 
+Pull open markets for those series:
+GET /markets?series_ticker=<series>&status=open&limit=1000
+For each market, get metadata (including title / subtitles):
+GET /markets/{ticker} provides title, yes_sub_title, no_sub_title, timestamps,
+etc. 
+Extracting the strike ladder
+For each market ticker in your selected series, parse: - meeting identifier (e.g., meeting month/year) from
+subtitle or event_ticker association - strike threshold  (e.g., “4.25%”) from title using a regex
+like (\d+(\.\d+)?)% - direction: “above” vs “below”
+Sort markets into ladders by (meeting, direction), then sort thresholds ascending: 
+• 
+• 
+35
+• 
+36
+37
+16
+⌈0.07⋅ C⋅ P ⋅ (1−P)⌉ 17
+32
+38
+1. 
+2. 
+39
+3. 
+4. 40
+5. 
+6. 
+41
+K
+K <1 K <2 ⋯<K 
+n
+6
+
+Computing executable prices from the Kalshi orderbook
+For  each  market  :  -  Pull  orderbook  (GET /markets/{ticker}/orderbook)  or  maintain  via
+WebSocket deltas. 
+- Let: -  = best YES bid in dollars -  = best NO bid in dollars
+- Kalshi reciprocity implies: -  YES ask  (because NO bid = YES ask in complement
+space). 
+Signal definition
+For each adjacent pair  in the ABOVE ladder:
+Let: - Buy leg: buy YES on  at  - Sell leg: sell YES on  at 
+Define per-contract gross credit: 
+Define fee model (taker , conservative): 
+(rounded up to the next cent as per the fee schedule). 
+Per-contract net edge (for ): 
+Where   is  a  slippage/latency  buffer  you  choose.  For  V1  with  small  size,  set:  -   (one  cent)
+conservative buffer .
+Entry condition - Enter when: -  (i.e., at least 1 cent net after all modeled costs), and - both
+markets have non-empty top-of-book quotes, and - the book depth at those levels supports at least your
+size.
+Trade construction and payoff
+Portfolio: - Long 1 YES at  - Short 1 YES at 
+Terminal payoff (by set inclusion ): - 1 if  - 0 otherwise
+This is never negative (you cannot lose at settlement by payoff logic), so if you enter for positive net credit
+after fees, you have a hard arbitrage.
+m(K)
+42
+b (K)Y b (K)N
+a (K) =Y 1−b (K)N
+16
+K <i K 
+i+1
+K
+i a (K)Y i K 
+i+1 b (K )Y i+1
+credit=b (K )−Y i+1 a (K)Y i
+fee(P,C) = 0.07⋅C⋅P ⋅(1−P)⌈ ⌉
+17
+C=1
+edge=credit−fee(a (K),1)−Y i fee(b (K ),1)−Y i+1 δ
+δ δ =$0.01
+edge≥$0.01
+K
+i K 
+i+1
+{R>K }⊆i+1 {R>K}i K <i R≤K 
+i+1
+7
+
+Execution rules that are actually buildable in 7 days
+Order  submission  primitives -  Use  POST /portfolio/orders for  each  order  (or  batch  APIs  once
+stable). 
+- Use time_in_force=fill_or_kill or immediate_or_cancel. 
+V1 execution sequence (minimize worst-case blowups) 1.  Buy the lower strike first (the “superset”
+event) using FOK: - Buy YES on   at  ,  time_in_force=fill_or_kill, size  . 2. If buy fills,
+immediately send sell on the higher strike  at  with IOC. 3. If the sell does not fill: - Try up to
+2 more IOC steps down the bid ladder (worse sell price) but only while your recalculated  stays ≥ 0. - If
+still unfilled, immediately flatten the long  position (sell YES) using IOC and accept the small loss; this is
+your “legging fail safe.”
+This is not perfect, but it’s a realistic week-one approach that avoids ever being naked short the higher-
+strike contract.
+Position sizing rules
+Starting capital is small, so size for survivability:
+Default size: 1 contract per spread until you have at least 50–100 successful paper executions. 
+Scale rule: once stable, size  by available depth and account equity:
+i.e., cap at 2% of equity per spread per leg, because platform/settlement risk is not “zero.”
+Risk limits
+Max open gross notional: 30% of account equity (sum of max downside exposures).
+Max daily realized loss: 2% of equity (after which bot disables trading and alerts you).
+Max concurrent ladders: 1 meeting initially (keep complexity low).
+No-trade window:
+from 30 minutes before last trading time through 30 minutes after (Fed-related contracts describe
+last trading at 1:55 PM ET and expiration around 2:05 PM ET). 
+and any time WebSocket feed is disconnected or sequence numbers are broken.
+Expected frequency of trades
+Realistically (and conservatively): - Early days: 0–3 trades/day, often clustered in tail strikes. - Many days:
+zero (that’s normal for an arbitrage-like strategy).
+System Architecture and Seven-Day Build Plan
+Minimal professional architecture
+Development path: laptop → GitHub → always-on home machine → exchange APIs → logs/alerts.
+43
+37
+K
+i a (K)Y i C
+K 
+i+1 b (K )Y i+1
+edge
+K
+i
+• 
+• C
+• C=min{C ,⌊0.02⋅depth Equity/$1⌋}
+• 
+• 
+• 
+• 
+• 
+• 
+44
+• 
+45
+8
+
+Core components 1. Market data service - REST snapshot at startup (series → events → markets → initial
+orderbooks). 
+- WebSocket streaming for orderbook_delta, ticker, and your fill notifications. 
+2.  Signal  engine -  Maintains  per-meeting  strike  ladders  and  computes  monotonicity  edge  on  every
+orderbook update. 3. Execution engine - Submits orders with IOC/FOK and enforces sequence rules. 
+4. Risk manager - Hard pre-trade checks (exposure, no-trade windows, stale feed)
+- Hard kill switch (daily loss, repeated auth failures, repeated order rejects) 5. State + logging - SQLite is fine
+for V1 (tables: markets, ladders, signals, orders, fills, positions snapshots). - Write structured JSON logs
+(rotating) for every decision and every outbound order payload. 6.  Alerts - Email/SMS/push on: crash,
+disconnect > N seconds, daily loss limit hit, repeated order rejects, settlement mismatch.
+What  to  skip  in  week  one -  FIX  connectivity  (Kalshi  FIX  exists  but  is  not  needed  and  may  require
+institutional access workflow). 
+- Full backtester / simulator (you can record live book data and replay later). - UI dashboards (log + alerts
+first).
+Always-on  reliability  practices -  Use  a  process  supervisor  (systemd  on  Linux;  launchd  on  macOS)  or
+container healthchecks. - WebSocket reconnect with exponential backoff (Kalshi docs explicitly recommend
+reconnection backoff). 
+- Build idempotent order placement via client_order_id and strict de-duplication. 
+- Respect Kalshi API tier rate limits. 
+- Keep keys secure; Kalshi API key requires RSA-PSS signing and your private key cannot be retrieved after
+creation. 
+- Remember Kalshi’s API usage is bound to the Developer Agreement. 
+Seven-day implementation plan
+Day 1: Platform plumbing + demo environment - Create Kalshi demo account and generate API key. -
+Implement  REST  market  discovery  (/series,  /markets,  /markets/{ticker},  /markets/
+{ticker}/orderbook). 
+- Implement WebSocket connect + subscribe to orderbook_delta for 3–10 markets. 
+Gate to proceed: stable reconnect loop + accurate live best bid/ask reconstruction from bids-only format.
+Day 2: Strike ladder builder - Parse market titles/subtitles into (meeting, direction, strike). - Build and
+maintain ladders; unit-test parsing on recorded samples. Gate: ladders are stable across restarts; you can
+print ordered strikes and current book top for each.
+Day 3: Signal engine + fee model - Implement monotonicity edge formula and conservative fee estimation
+using published formula. 
+- Add slippage buffer and minimum edge threshold.  Gate: signals fire only on true violations, not on
+rounding or missing-book cases.
+Day 4: Execution engine in demo - Implement “buy lower strike FOK → sell higher strike IOC → hedge/
+flatten  on  failure.”  -  Record  every  order  +  response;  ingest  fills  via  REST  /portfolio/fills and/or
+WebSocket fill. 
+Gate: you can execute 100+ demo trades without orphan positions persisting unnoticed.
+46
+47
+37
+48
+11
+49
+15
+50
+51
+46
+36
+16
+17
+52
+9
+
+Day  5:  Hostile  reliability  tests -  Kill  the  network  mid-trade;  confirm  bot  halts  and  alerts  instead  of
+spamming orders. - Force rate-limit errors; confirm backoff and self-throttling per tier . 
+- Force partial fills; verify flatten logic. Gate: bot cannot generate runaway exposure.
+Day 6: Small live pilot - Move to production only after KYC and API key setup are complete. - Start with
+$100–$200, max 1 contract per spread, max 1 ladder . - Run during liquid hours only; disable overnight.
+Gate: 1–3 live trades with correct fills, fees, and stable logs.
+Day 7: Expand cautiously - Add a second meeting ladder or add “below” ladders. - Add daily P&L and “stop
+running” conditions. - Add automated “health report” alert once/day.
+Risk Analysis, Profit Expectations, and Final Recommendation
+Hostile risk review: top reasons this fails
+You didn’t actually define a valid subset/superset relationship, because the contract language
+differs (meeting definition, “upper bound” detail, strictly greater vs ≥, etc.). Kalshi’s FED contract
+explicitly uses the upper bound of the FFR target range and “strictly greater than/less than”
+language. 
+Legging risk: buy leg fills, sell leg fails; you carry directional exposure. 
+Fee underestimation due to rounding behavior; Kalshi publishes fee rounding details and fee
+rebates behavior; naive models will be wrong at small sizes. 
+Liquidity traps: the bid you intend to hit disappears during your order submission latency.
+Stale data / desynced order book after WebSocket reconnect; you trade on bad state.
+Slippage dominates: even if monotonicity is violated by 1–2 cents, the spread and fees eliminate
+edge (common for small accounts).
+Regime shift in microstructure: market maker programs, fee multipliers, or new product design
+reduces violations (Kalshi publishes series fee changes and non-standard fee multipliers on its fee
+schedule pages). 
+Operational outages / API changes: Kalshi ships API changes (e.g., WebSocket channel behavior
+adjustments in changelog). 
+Settlement timing and disputes: Kalshi notes settlement can take hours after outcome is known
+and can take longer when awaiting official data. 
+Legal/product eligibility drift: The event-contract space is actively litigated/regulated (especially
+sports), and product availability can change quickly; staying in macro reduces this risk, but it’s not
+zero. 
+Conditions where the strategy loses money
+Even though the terminal payoff of the  intended spread is nonnegative, you can lose money in practice
+when:
+You enter trades where the net credit does not cover fees (common if you chase tiny violations).
+You repeatedly suffer legging failures and pay the spread to flatten.
+You trade close to expiration when books are jumping and fills are chaotic.
+You are wrong about the contract mapping (meeting/threshold parsing bug) and your “spread” is not
+actually nested.
+53
+1. 
+32
+2. 
+3. 
+54
+4. 
+5. 
+6. 
+7. 
+55
+8. 
+56
+9. 
+57
+10. 
+58
+• 
+• 
+• 
+• 
+10
+
+Clear “STOP running it” signals
+Stop the bot immediately if any of the following happen:
+More than 2 legging failures in a day requiring flattening at a loss.
+Any period where your orderbook state is uncertain (missed snapshots, sequence gaps) and the bot
+continues trading.
+Your realized daily loss hits 2% of equity (hard stop).
+You see evidence of contract-definition mismatch (e.g., spreads that should be nonnegative are
+marking deeply negative at settlement).
+Profit reality check
+Because you asked for brutal honesty:
+Edge per trade (realistic): often 1–5 cents per spread net when it exists, sometimes more in
+extreme stale tail quotes; frequently 0 (no trade). This is the natural scale given $0.01 tick sizes and
+fee structure. 
+Monthly return range (small capital):
+If you get a few clean fills: maybe +1% to +10% on $100–$1,000 (that’s $1–$100), but many months
+will be lower because opportunities are sporadic.
+Bad months can be negative if you overtrade small violations or get repeated legging losses.
+Variance/drawdowns: dominated by operational errors and legging, not “market direction” (if you
+adhere to the rules).
+Scalability limits: liquidity at mispriced tail strikes and the fact that repeated arbitrage quickly
+corrects itself. Also, fees climb toward mid-probabilities, so scaling into broad 50/50 markets can
+destroy EV. 
+Why “$1k → $200k” stories are misleading
+Claims  like  that  imply  either:  -  massive  leverage  (not  consistent  with  fully  collateralized  retail  event
+contracts), or - sustained very high edge per trade at scale (unlikely in small-tick, fee-bearing markets), or -
+survivorship bias (people report wins, not the many failed bots).
+In a fully collateralized environment, your growth rate is fundamentally constrained by: available mispricing,
+fills,  and  time-to-settlement  capital  lock.  Kalshi  emphasizes  full  collateralization  and  funds  staying  on-
+platform while holding positions. 
+Final recommendation
+If your goal is the “single best” realistic automated system you can build in 7 days from the U.S. with $100–
+$1,000:
+Build on Kalshi first (demo → production), because the API + WebSockets + demo environment are
+built for programmatic trading and are the fastest path to a working autopilot system. 
+Trade rates/Fed threshold ladders with the two-leg monotonicity arbitrage strategy described
+above, because it is the most “edge-real” and implementation-feasible approach that does not
+depend on forecasting models, and is supported by the documented structure and known tail-
+staleness issues in these markets. 
+• 
+• 
+• 
+• 
+• 
+59
+• 
+• 
+• 
+• 
+• 
+17
+60
+• 
+19
+• 
+61
+11
+
+kalshi.com
+https://kalshi.com/docs/kalshi-fee-schedule.pdf
+https://docs.kalshi.com/api-reference/market/get-series-list
+https://docs.kalshi.com/api-reference/market/get-series-list
+https://www.federalreserve.gov/econres/feds/files/2026010pap.pdf
+https://www.federalreserve.gov/econres/feds/files/2026010pap.pdf
+https://docs.kalshi.com/getting_started/quick_start_websockets
+https://docs.kalshi.com/getting_started/quick_start_websockets
+https://www.cftc.gov/IndustryOversight/TradingOrganizations/DCMs/index.htm
+https://www.cftc.gov/IndustryOversight/TradingOrganizations/DCMs/index.htm
+https://docs.kalshi.com/getting_started/orderbook_responses
+https://docs.kalshi.com/getting_started/orderbook_responses
+https://www.cftc.gov/PressRoom/PressReleases/8478-22
+https://www.cftc.gov/PressRoom/PressReleases/8478-22
+https://www.cftc.gov/IndustryOversight/IndustryFilings/TradingOrganizations/42993
+https://www.cftc.gov/IndustryOversight/IndustryFilings/TradingOrganizations/42993
+https://docs.kalshi.com/getting_started/demo_env
+https://docs.kalshi.com/getting_started/demo_env
+https://docs.kalshi.com/getting_started/quick_start_market_data
+https://docs.kalshi.com/getting_started/quick_start_market_data
+Create Order - API Documentation
+https://docs.kalshi.com/api-reference/orders/create-order
+https://docs.kalshi.com/api-reference/orders/batch-create-orders
+https://docs.kalshi.com/api-reference/orders/batch-create-orders
+Rate Limits and Tiers
+https://docs.kalshi.com/getting_started/rate_limits?utm_source=chatgpt.com
+https://kalshi.com/market-integrity/prediction-markets-101
+https://kalshi.com/market-integrity/prediction-markets-101
+https://www.cftc.gov/PressRoom/PressReleases/8926-24
+https://www.cftc.gov/PressRoom/PressReleases/8926-24
+https://www.cmegroup.com/rulebook/CME/index.html
+https://www.cmegroup.com/rulebook/CME/index.html
+https://www.interactivebrokers.com/en/pricing/commissions-events.php
+https://www.interactivebrokers.com/en/pricing/commissions-events.php
+https://forecasttrader .interactivebrokers.com/en/learn.php
+https://forecasttrader .interactivebrokers.com/en/learn.php
+https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
+https://www.interactivebrokers.com/campus/ibkr-api-page/cpapi-v1/
+1 17 59
+2 38 39 46
+3 34 61
+4 11 12 36 45 47
+5
+6 16
+7
+8
+9 19
+10
+13 37 43 49
+14 27
+15 53
+18 60
+20
+21 28
+22
+23
+24
+12
+
+https://forecasttrader .interactivebrokers.com/en/home.php
+https://forecasttrader .interactivebrokers.com/en/home.php
+https://www.interactivebrokers.com/campus/ibkr-api-page/event-contracts/
+https://www.interactivebrokers.com/campus/ibkr-api-page/event-contracts/
+https://docs.kalshi.com/api-reference/events/get-events
+https://docs.kalshi.com/api-reference/events/get-events
+https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FED.pdf
+https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FED.pdf
+https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FEDDECISION.pdf
+https://kalshi-public-docs.s3.amazonaws.com/contract_terms/FEDDECISION.pdf
+https://cepr .org/voxeu/columns/economics-kalshi-prediction-market
+https://cepr .org/voxeu/columns/economics-kalshi-prediction-market
+https://docs.kalshi.com/api-reference/market/get-markets
+https://docs.kalshi.com/api-reference/market/get-markets
+https://docs.kalshi.com/api-reference/market/get-market
+https://docs.kalshi.com/api-reference/market/get-market
+https://docs.kalshi.com/api-reference/market/get-market-orderbook
+https://docs.kalshi.com/api-reference/market/get-market-orderbook
+https://docs.kalshi.com/fix
+https://docs.kalshi.com/fix
+Quick Start: Authenticated Requests (No SDK)
+https://docs.kalshi.com/getting_started/quick_start_authenticated_requests?utm_source=chatgpt.com
+https://docs.kalshi.com/welcome
+https://docs.kalshi.com/welcome
+https://docs.kalshi.com/api-reference/portfolio/get-fills
+https://docs.kalshi.com/api-reference/portfolio/get-fills
+https://docs.kalshi.com/getting_started/fee_rounding
+https://docs.kalshi.com/getting_started/fee_rounding
+https://kalshi.com/fee-schedule
+https://kalshi.com/fee-schedule
+https://docs.kalshi.com/changelog
+https://docs.kalshi.com/changelog
+https://help.kalshi.com/en/articles/13823821-market-faqs
+https://help.kalshi.com/en/articles/13823821-market-faqs
+U.S. CFTC Signals Imminent Rulemaking on Prediction ...
+https://www.sidley.com/en/insights/newsupdates/2026/02/us-cftc-signals-imminent-rulemaking-on-prediction-markets?
+utm_source=chatgpt.com
+25
+26 29
+30
+31
+32 44
+33
+35
+40
+41
+42
+48
+50
+51
+52
+54
+55
+56
+57
+58
+13

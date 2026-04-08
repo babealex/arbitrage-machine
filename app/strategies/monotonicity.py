@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 
-from app.market_data.orderbook import estimate_fee_cents
-from app.models import Market, Signal, StrategyEvaluation, StrategyName
+from app.execution.models import SignalLegIntent
+from app.instruments.models import InstrumentRef
+from app.market_data.fees import balance_aligned_fee_dollars, edge_threshold
+from app.models import Market, Signal, SignalEdge, StrategyEvaluation, StrategyName
 from app.strategies.base import Strategy
 
 
@@ -84,18 +87,22 @@ class MonotonicityStrategy(Strategy):
                     )
                 )
                 continue
-            raw_edge = (high_price - low_price) / 100.0
-            fees = (estimate_fee_cents(int(low_price), 1) + estimate_fee_cents(int(high_price), 1)) / 100.0
-            adjusted_edge = raw_edge - fees - (self.slippage_buffer_bps / 10_000.0)
-            edge_bps = adjusted_edge * 10_000
+            raw_edge = Decimal(str(high_price - low_price)) / Decimal("100")
+            fees = balance_aligned_fee_dollars(Decimal(low_price) / Decimal("100"), side="buy") + balance_aligned_fee_dollars(Decimal(high_price) / Decimal("100"), side="sell")
+            gate = edge_threshold(
+                edge_before_fees=raw_edge,
+                fee_estimate=fees,
+                execution_buffer=Decimal(str(self.slippage_buffer_bps)) / Decimal("10000"),
+            )
+            edge_bps = float(gate.edge_after_fees * Decimal("10000"))
             qty = self.size_from_equity(equity, self.max_position_pct, low_price / 100.0)
             size_multiple_lower = (quote_context["lower_yes_ask_size"] / qty) if qty > 0 else 0.0
             size_multiple_higher = (quote_context["higher_yes_bid_size"] / qty) if qty > 0 else 0.0
             metadata = {
                 "lower": lower.ticker,
                 "higher": higher.ticker,
-                "raw_edge": raw_edge,
-                "fees": fees,
+                "raw_edge": float(gate.edge_before_fees),
+                "fees": float(gate.fee_estimate),
                 "size_multiple_lower": size_multiple_lower,
                 "size_multiple_higher": size_multiple_higher,
                 "min_size_multiple": self.min_size_multiple,
@@ -108,24 +115,24 @@ class MonotonicityStrategy(Strategy):
                         ticker=lower.ticker,
                         generated=False,
                         reason="insufficient_size_multiple",
-                        edge_before_fees=raw_edge,
-                        edge_after_fees=adjusted_edge,
-                        fee_estimate=fees,
+                        edge_before_fees=float(gate.edge_before_fees),
+                        edge_after_fees=float(gate.edge_after_fees),
+                        fee_estimate=float(gate.fee_estimate),
                         quantity=qty,
                         metadata=metadata,
                     )
                 )
                 continue
-            if edge_bps < self.min_edge_bps:
+            if not gate.passes_bps(self.min_edge_bps):
                 evaluations.append(
                     StrategyEvaluation(
                         strategy=StrategyName.MONOTONICITY,
                         ticker=lower.ticker,
                         generated=False,
                         reason="edge_below_threshold",
-                        edge_before_fees=raw_edge,
-                        edge_after_fees=adjusted_edge,
-                        fee_estimate=fees,
+                        edge_before_fees=float(gate.edge_before_fees),
+                        edge_after_fees=float(gate.edge_after_fees),
+                        fee_estimate=float(gate.fee_estimate),
                         quantity=qty,
                         metadata=metadata,
                     )
@@ -141,9 +148,9 @@ class MonotonicityStrategy(Strategy):
                         ticker=lower.ticker,
                         generated=False,
                         reason="ladder_cooldown_active",
-                        edge_before_fees=raw_edge,
-                        edge_after_fees=adjusted_edge,
-                        fee_estimate=fees,
+                        edge_before_fees=float(gate.edge_before_fees),
+                        edge_after_fees=float(gate.edge_after_fees),
+                        fee_estimate=float(gate.fee_estimate),
                         quantity=qty,
                         metadata=metadata,
                     )
@@ -154,14 +161,32 @@ class MonotonicityStrategy(Strategy):
                     strategy=StrategyName.MONOTONICITY,
                     ticker=lower.ticker,
                     action="buy_lower_sell_higher",
-                    probability_edge=adjusted_edge,
-                    expected_edge_bps=edge_bps,
                     quantity=qty,
+                    edge=SignalEdge.from_values(
+                        edge_before_fees=gate.edge_before_fees,
+                        edge_after_fees=gate.edge_after_fees,
+                        fee_estimate=gate.fee_estimate,
+                        execution_buffer=Decimal(str(self.slippage_buffer_bps)) / Decimal("10000"),
+                    ),
+                    source="monotonicity_ladder",
+                    confidence=1.0,
+                    priority=1,
                     legs=[
-                        {"ticker": lower.ticker, "action": "buy", "side": "yes", "price": int(low_price), "tif": "FOK"},
-                        {"ticker": higher.ticker, "action": "sell", "side": "yes", "price": int(high_price), "tif": "IOC"},
+                        SignalLegIntent(
+                            instrument=InstrumentRef(symbol=lower.ticker, contract_side="yes"),
+                            side="buy",
+                            order_type="limit",
+                            limit_price=Decimal(int(low_price)) / Decimal("100"),
+                            time_in_force="FOK",
+                        ),
+                        SignalLegIntent(
+                            instrument=InstrumentRef(symbol=higher.ticker, contract_side="yes"),
+                            side="sell",
+                            order_type="limit",
+                            limit_price=Decimal(int(high_price)) / Decimal("100"),
+                            time_in_force="IOC",
+                        ),
                     ],
-                    metadata=metadata,
                 )
             )
             self._last_signal_at[pair_key] = now
@@ -171,9 +196,9 @@ class MonotonicityStrategy(Strategy):
                     ticker=lower.ticker,
                     generated=True,
                     reason="signal_generated",
-                    edge_before_fees=raw_edge,
-                    edge_after_fees=adjusted_edge,
-                    fee_estimate=fees,
+                    edge_before_fees=float(gate.edge_before_fees),
+                    edge_after_fees=float(gate.edge_after_fees),
+                    fee_estimate=float(gate.fee_estimate),
                     quantity=qty,
                     metadata=metadata,
                 )

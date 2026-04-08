@@ -25,14 +25,20 @@ class ReportingRepository:
             orders=self.db.fetch_table_rows("orders"),
             order_events=self.db.fetch_table_rows("order_events"),
             fills=self.db.fetch_table_rows("fills"),
+            execution_outcomes=self.db.fetch_table_rows("execution_outcomes"),
             observations=self.db.fetch_table_rows("monotonicity_signal_observations"),
             cross_market_snapshots=self.db.fetch_table_rows("cross_market_snapshots"),
+            risk_events=self.db.fetch_table_rows("risk_events"),
         )
 
     def load_belief_reporting_bundle(self) -> BeliefReportingBundle:
         return BeliefReportingBundle(
+            belief_sources=self.db.fetch_table_rows("belief_sources"),
+            event_definitions=self.db.fetch_table_rows("event_definitions"),
             belief_snapshots=self.db.fetch_table_rows("belief_snapshots"),
             disagreement_snapshots=self.db.fetch_table_rows("disagreement_snapshots"),
+            cross_market_disagreements=self.db.fetch_table_rows("cross_market_disagreements"),
+            outcome_realizations=self.db.fetch_table_rows("outcome_realizations"),
             outcome_tracking=self.db.fetch_table_rows("outcome_tracking"),
         )
 

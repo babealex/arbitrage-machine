@@ -35,6 +35,7 @@ def build_event_run_manifest(settings) -> dict:
             "partial_fills_enabled": True,
             "displayed_size_enforced": True,
             "passive_orders_assumed_instant": False,
+            "numeric_model_status": "internal analytics remain float-oriented in several persistence/reporting paths; exchange-facing fixed-point migration is only partially implemented",
             "submission_latency_seconds": settings.event_paper_submission_latency_seconds,
             "half_spread_bps": settings.event_paper_half_spread_bps,
             "top_level_size": settings.event_paper_top_level_size,
@@ -62,8 +63,6 @@ def event_driven_summary(news_rows, classified_rows, candidate_rows, queue_rows,
     candidates_by_symbol: dict[str, int] = defaultdict(int)
     classified_by_type: dict[str, int] = defaultdict(int)
     outcomes_by_symbol: dict[str, list[float]] = defaultdict(list)
-    audit_status_counts: dict[str, int] = defaultdict(int)
-    audit_decision_counts: dict[str, int] = defaultdict(int)
     open_positions = 0
     for row in classified_rows:
         classified_by_type[row["event_type"]] += 1
@@ -75,9 +74,6 @@ def event_driven_summary(news_rows, classified_rows, candidate_rows, queue_rows,
             open_positions += 1
     for row in outcome_rows:
         outcomes_by_symbol[row["symbol"]].append(float(row["return_pct"]))
-    for row in audit_rows:
-        audit_status_counts[str(row["status"])] += 1
-        audit_decision_counts[str(row["decision_state"])] += 1
     recent_news = [
         {
             "timestamp_utc": row["timestamp_utc"],
@@ -111,9 +107,12 @@ def event_driven_summary(news_rows, classified_rows, candidate_rows, queue_rows,
         "win_rate": (sum(1 for row in outcome_rows if float(row["return_pct"]) > 0) / len(outcome_rows)) if outcome_rows else 0.0,
         "top_symbols_by_candidates": dict(sorted(candidates_by_symbol.items(), key=lambda item: item[1], reverse=True)[:10]),
         "top_symbols_by_outcome": top_symbol_outcomes,
-        "paper_execution_audit_rows": len(audit_rows),
-        "paper_execution_status_breakdown": dict(sorted(audit_status_counts.items())),
-        "paper_execution_decision_breakdown": dict(sorted(audit_decision_counts.items())),
+        "legacy_paper_execution_audit_rows": len(audit_rows),
+        "execution_realism_caveats": [
+            "paper metrics do not prove live execution viability",
+            "legging loss, disconnect handling, stale-book halts, and exchange-side state divergence remain material risks",
+            "fee and slippage realism should be interpreted conservatively, not as broker-grade reconciliation",
+        ],
         "recent_news": recent_news,
         "recent_closed_trades": [
             {

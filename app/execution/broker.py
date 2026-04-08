@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -221,6 +222,12 @@ class PaperBroker:
             return self._simulate_passive(symbol, side, quantity, submitted_at, limit_price, book, audit_events)
         return self._simulate_marketable(symbol, side, quantity, submitted_at, book, audit_events)
 
+    def submitted_at_for(self, signal_ts: datetime | None = None) -> datetime:
+        return self._submitted_at(signal_ts)
+
+    def snapshot_order_book(self, symbol: str, signal_ts: datetime | None = None) -> PaperOrderBook | None:
+        return self._build_book(symbol, self._submitted_at(signal_ts))
+
     def get_price(self, symbol: str, *, liquidation_side: str | None = None) -> float | None:
         book = self._build_book(symbol, datetime.now(timezone.utc))
         if book is None:
@@ -287,7 +294,8 @@ class PaperBroker:
                 book=book,
                 audit_events=audit_events,
             )
-        avg_price = round(sum(price * size for price, size in fill_levels) / filled_quantity, 6)
+        weighted_notional = math.fsum(price * size for price, size in fill_levels)
+        avg_price = round(weighted_notional / filled_quantity, 6)
         gross_cash = avg_price * filled_quantity
         if side == "buy":
             self.cash -= gross_cash

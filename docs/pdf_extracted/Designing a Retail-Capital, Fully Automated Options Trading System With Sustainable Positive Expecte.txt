@@ -1,0 +1,748 @@
+Designing a Retail-Capital, Fully Automated
+Options Trading System With Sustainable Positive
+Expected Value
+Realistic edge sources under retail constraints
+A retail system with $5K–$50K, no latency advantage, and standard data cannot compete on the same
+axis  as  market  makers  or  “top-of-book”  liquidity  providers,  whose  edge  is  often  dominated  by  spread
+capture, queue position, and ultra-low-latency hedging. In listed U.S. options, quotes and last sales are
+consolidated and disseminated via Options Price Reporting Authority, which is foundational for how
+most participants see the market, but does not grant a meaningful execution edge to a slower , retail-style
+automated trader . 
+So a plausible path to positive expected value (EV) after costs must be anchored in structural premia
+and slow-moving, repeatable conditional effects, not “predict direction, buy calls.” In options, the most
+empirically persistent candidates are:
+Variance risk premium (VRP): the difference between risk-neutral expected variance (embedded in
+option prices) and real-world expected realized variance. This is frequently framed as “implied
+variance tends to exceed subsequent realized variance,” meaning sellers of variance/volatility may
+earn compensation for warehousing crash/volatility risk (but with negative skew, tail risk). 
+Skewness / tail risk premia: equity index option surfaces often show strongly negative skew (puts
+rich vs calls), consistent with priced downside jump/crash risk and demand pressure for protection. 
+Event-driven volatility term structure effects: scheduled events (earnings; macro releases)
+systematically reshape the implied-vol term structure; implied volatility often rises into an event and
+drops after uncertainty resolves, though the distribution is very non-Gaussian and instrument-
+specific. 
+This leads to an important design principle:  your “alpha” is mostly a pricing/structure problem, not a
+forecasting problem. You win (if you can) by (a) choosing the correct structure to monetize a premium (or a
+mispricing) while (b) constraining the tail and model-error exposure tightly enough to survive inevitable bad
+regimes.
+Minimal sufficient mathematical framework for structure selection
+and EV
+This section gives correct-but-minimal math that is sufficient to build the system’s pricing, EV estimation,
+and risk controls. The goal is not a perfect market model; it is a coherent model that (i) respects no-arbitrage
+basics, (ii) produces realistic P&L distributions, and (iii) explicitly prices in costs and execution uncertainty.
+1
+2
+• 
+3
+• 
+4
+• 
+5
+1
+
+Option  pricing  baseline  and  limitations. Use  Black–Scholes–Merton as  a  quotation  engine—a  stable
+mapping among price, strike, time, rates, dividends, and implied volatility—rather than as a belief that
+returns are lognormal. The original framework is due to Fischer Black and Myron Scholes, extended
+in continuous-time no-arbitrage form by Robert C. Merton. 
+For a European call (no dividends; continuous compounding), the baseline is: 
+In real listed equity options, American exercise, discrete dividends, jumps, stochastic volatility, and 
+microstructure noise violate the model’s assumptions; that is fine—BSM is still the standard coordinate
+system for IV and Greeks.
+Greeks and multi-leg interpretation. Greeks are partial derivatives of option value and are the system’s
+core risk accounting “currency.” Definitions and intuition are well summarized in educational material from
+Cboe Global Markets and the Options Industry Council. 
+For a multi-leg structure, the first-order portfolio Greeks are (approximately) the signed sum across legs: 
+where  is +1 for long, −1 for short (scaled by contract multiplier). This is what lets you represent a trade as
+a risk vector instead of “bullish/bearish.”
+Concrete interpretation you will actually use in automation:
+Delta ≈ exposure to small spot moves; you can keep portfolio delta near 0 to avoid direction
+dependence.
+Gamma penalizes being wrong quickly; short-gamma structures can die in fast moves (especially
+into events).
+Vega is the key for volatility-premium harvesting; your system should explicitly estimate EV of being
+long/short vega given IV dynamics.
+Theta is not “profit”; it is the time component of price change holding IV and spot constant, which is
+rarely true in events/regime shifts.
+Implied volatility surface representation. The system must turn a raw chain into a surface: 
+where   (log-moneyness  vs  the  forward)  and   is  maturity.  Practical  and  common
+parameterizations include SABR (often used in rate/FX contexts but applicable as a smile model) and SVI
+(widely used by practitioners for equity smiles). The classic SABR approximation is due to Patrick Hagan
+and  coauthors,  and  arbitrage-aware  SVI  developments  are  associated  with  Jim  Gatheral and
+collaborators. 
+A highly buildable approach for a retail system:
+Per expiry , fit SVI total variance  using: 
+6 7
+8 9
+C=SN(d )−1 Ke N(d ), d =−rT 2 1,2 
+σ T
+ln(S/K)+(r± σ )T21 2
+10 11 12
+Δ =struct nΔ, Γ =
+i
+∑ i i struct nΓ, ν =
+i
+∑ i i struct nν, Θ =
+i
+∑ i i struct nΘ
+i
+∑ i i
+n
+i
+• 
+• 
+• 
+• 
+σ (k,T)imp
+k =ln(K/F) T
+13
+14
+15
+• T 
+j w(k) =σ (k,T)Timp2
+2
+
+Enforce basic static arbitrage sanity checks (e.g., total variance non-decreasing in  to avoid
+calendar arbitrage; smooth enough convexity vs strike). 
+From fitted parameters, derive compact features: ATM IV, skew slope, curvature, wing steepness,
+term-structure slope.
+This gives the optimizer a stable, low-dimensional view of an otherwise huge chain.
+Risk-neutral  vs  real-world  distributions  (and  why  option  prices  are  not  probabilities). Under  no-
+arbitrage pricing, option value is a discounted expectation under a risk-neutral measure, not the real-world
+(“physical”) distribution. This distinction is central in Douglas Breeden and Robert Litzenberger: the
+(risk-neutral) state price density can be inferred from the curvature of call prices across strikes (intuition: the
+second derivative of price w.r .t. strike relates to the risk-neutral density). 
+But risk-neutral density is  not a true probability forecast—risk premia distort it. Variance and skewness
+premia are documented and modeled in the literature: variance risk premium measurement and replication
+via  option  portfolios  (Peter  Carr and  Liuren  Wu),  and  empirical  evidence  that  a  variance  risk
+premium has predictive/asset-pricing relevance (e.g., Torben Bollerslev and coauthors). 
+Operational takeaway: your EV engine must specify  a real-world distribution   (your best forecast) to
+compute expected P&L, while still using IV surfaces for mark-to-market realism.
+Expected value of option structures, including costs. For a structure with payoff  held to expiry: 
+However , most systematic options books do not hold everything to expiry; they manage risk and often exit
+early. Then you should model mark-to-market P&L at an exit time : 
+where  is computed from your pricing engine (BSM implied-vol repricing), and  is generated by
+your vol dynamics model.
+To actually compute this in production, Monte Carlo is the right default:
+Analytical approximations are fast but brittle once you include event jumps, IV regime shifts, and
+early exits.
+Monte Carlo directly produces full P&L distributions, which you need for tail-aware position sizing and
+drawdown control.
+Volatility modeling: realized, implied, and events. You need a realized-vol estimator that is stable, fast,
+and adaptive. A minimal baseline is EWMA variance (popularized in RiskMetrics) with decay , updating: 
+w(k) =a+b ρ(k−m)+ ( (k−m) +σ2 2)
+• T
+16
+• 
+17 18
+19
+20 21
+22 3
+P
+Π(S )T
+EV=E [Π(S )]−P T PremiumPaid−Fees−ExpectedSpreadCost−ExpectedSlippage
+τ
+P&L(τ) =V (S ,σ ,T −struct τ τ τ)−V −entry Costs
+V 
+struct σ 
+τ
+• 
+• 
+λ
+σ =t2 λσ +t−12 (1−λ)r 
+t2
+3
+
+RiskMetrics documents and the broader literature motivate exponential weighting to respond to regime
+changes. 
+You can add GARCH only if it materially improves conditional distribution calibration; ARCH-family models
+originate with Robert Engle. 
+For event volatility, both the empirical literature and practical trading experience show implied volatility
+behavior around earnings and disclosures is structured: implied volatility often declines after earnings
+announcements  on  average,  and  its  change  relates  to  the  nature  of  earnings  news  and  uncertainty
+resolution. 
+Execution & microstructure math (spread, fill probability, and impact). The system must treat execution
+as stochastic. Two foundations:
+Bid–ask spread as a first-order cost: a marketable order crosses the spread; limit orders trade fill-
+probability for price improvement. 
+Market impact / execution risk models: the Almgren–Chriss framework formalizes trading cost vs
+risk and is still the baseline reference class for “execution as optimization.” 
+For retail options, impact is often less about moving the underlying and more about crossing wide option
+spreads and adverse selection, so your cost model should be empirical and per-underlying/per-DTE.
+Portfolio and risk math. You need a sizing rule that explicitly references tail risk. The theoretical Kelly
+criterion (maximize expected log wealth) originates with John Larry Kelly Jr .. 
+In practice, a retail options system should use  fractional Kelly or a  vol-targeting proxy because (i) your
+parameter estimates are noisy, (ii) option tails are hard to model, and (iii) margin/assignment discontinuities
+break smooth assumptions.
+A buildable regime-safe sizing target is:
+compute predicted portfolio daily vol  from scenario P&L,
+pick target daily vol  (e.g., 0.4%–0.8% of NAV/day for small accounts),
+scale new risk so that ,
+enforce a hard max-loss budget per position and per day (see Success Criteria).
+Execution realism and constraints that must be engineered in
+Market data reality. In U.S.-listed options, consolidated quotation / last-sale dissemination is handled by
+OPRA. Your system should log the exact bid/ask it saw at decision time, because options markets are quote-
+driven and can be noisy. 
+Bid–ask spreads are not a rounding error. Equity option bid–ask spreads are empirically related to option-
+level risk/liquidity characteristics; spreads widen for harder-to-hedge options and during stress. 
+23
+24 25
+5
+• 
+26
+• 
+27
+28 29
+• σ^p,1d
+• σ\*
+• ≤σ^p,1d σ\*
+• 
+30
+31
+4
+
+That means “mid fills” are not guaranteed—even in liquid names—and spread costs can flip EV sign for
+small  edges.  Your  system  must  treat  spread  and  fill  quality  as  first-class  prediction  targets,  not
+afterthoughts.
+Limit  vs  market  order  decision. Academic  and  practitioner  summaries  agree  on  the  basic  trade-off:
+marketable orders pay the spread for immediacy; limit orders may improve price but risk not filling. 
+For retail automation, a robust default is:
+use limit orders, pegged to mid or slightly worse than mid,
+cap the time you are willing to “chase” (to avoid adverse selection),
+cancel if the surface features (IV/skew/spread) drift beyond thresholds while waiting.
+If you use a broker that exposes execution tooling, you can optionally route via broker algos designed to
+work inside the spread; for example, Interactive Brokers documents an “Adaptive” algo intended to
+trade between bid and ask, with urgency controls. 
+Assignment/exercise discontinuities are real risk. Short American-style equity options can be assigned;
+the mechanics involve clearing through Options Clearing Corporation and assignment obligations that
+can create overnight/gap exposure. FINRA explains assignment as the writer’s obligation triggered
+when a holder exercises. 
+Automation requirements that follow from this:
+avoid holding short ITM options near expiration unless explicitly modeled and margin-safe,
+include dividend/exercise heuristics (or simply ban short calls over ex-div windows),
+close structures before expiration unless the system has explicit exercise-by-exception handling.
+Retail  constraints:  day-trading  rules  and  capital  efficiency. If  the  system  intends  to  trade  intraday
+frequently in a margin account under $25K, the pattern day trader regime matters. FINRA states a $25,000
+minimum equity requirement for pattern day traders. 
+A realistic fully automated retail options system should therefore bias toward  swing horizons (days to
+weeks), not minute-level churn, unless the user’s account structure and broker rules explicitly support it.
+Modular system architecture that is actually implementable
+The architecture below maps directly onto your required layers A–F, but is designed so you can build it
+incrementally, with every component logging the exact artifacts needed for later learning.
+Layer A — Market state encoder
+Input (per underlying, per snapshot): underlying last/mark price; OHLCV bars; option chain with bid/ask/
+size, IV, greeks (or raw prices); open interest; volume.
+26
+• 
+• 
+• 
+32
+33
+34
+35
+36
+• 
+• 
+• 
+37
+5
+
+Core computations:
+Forward normalization: compute forward  (spot ± carry/div estimate). 
+IV surface fit per expiry: fit SVI to total variance  per expiry; reject fits that violate sanity
+checks (e.g., nonphysical parameters, discontinuities). 
+Surface feature vector (examples):
+ATM IV at 7D/30D/60D
+skew slope at each tenor (e.g., IV(25Δ put) − IV(ATM))
+curvature (butterfly measure)
+term structure: slope of ATM total variance vs maturity
+“event premium proxy”: near-expiry ATM variance minus next-expiry ATM variance
+Realized volatility & regime: EWMA RV at multiple horizons; realized skewness (optional); stress
+flag if RV spikes. 
+Implied-vs-realized gap: proxy for VRP: . VRP relevance is supported
+by the variance risk premium literature measuring it via option replication and realized variance. 
+Output: a compact state vector  and a structured surface object (SVI params per expiry + quality metrics).
+Layer B — Information extraction AI layer
+The LLM is not a trader . It is a text-to-structure parser with uncertainty estimates.
+Permitted  inputs: earnings  releases/transcripts;  8-K/10-Q/10-K;  major  headlines;  macro  statements/
+releases.
+Public source examples you can automate against:
+U.S. Securities and Exchange Commission provides EDGAR APIs for company submissions and
+extracted XBRL. 
+Macro calendars: Federal Reserve posts Federal Open Market Committee meeting calendars;
+U.S. Bureau of Labor Statistics posts CPI release schedules. 
+LLM outputs (examples):
+event type: earnings / M&A / regulatory / macro
+tone: positive / neutral / negative (coarse)
+“uncertainty score”: 0–1 (based on hedging language, guidance withdrawal, unusual items)
+“surprise likelihood”: low/medium/high (explicitly not a price-direction forecast)
+extracted structured facts: guidance change; buyback mention; litigation mention; etc.
+These become features into the scenario engine, not trade triggers.
+Layer C — Scenario and path engine
+Objective: generate forward distributions for   that produce realistic mark-to-market option
+behavior .
+1. F
+2. w(k)
+38
+3. 
+4. 
+5. 
+6. 
+7. 
+8. 
+9. 
+39
+10. =VRP σ −imp,30d2 E[σ ]real,30d2
+40
+x
+t
+• 41
+42
+• 43 44
+45 46
+• 
+• 
+• 
+• 
+• 
+(S,σ (t))t imp
+6
+
+A buildable model that respects your constraints:
+Spot process (non-event): log-return increments with EWMA volatility: 
+Event jump: on event timestamp , add a jump: 
+with parameters learned from history per underlying/event-type.
+Implied vol dynamics: mean reversion toward a regime level plus event crush: 
+where  is a learned “crush” term. Empirically, implied volatility often declines after earnings on
+average, motivating a crush component. 
+Output: a Monte Carlo sample of P&L paths for each candidate structure, including distributions of max
+drawdown, probability of stop-out, and tail loss.
+Layer D — Structure optimization engine
+This is the heart: enumerating and scoring candidate structures under realistic costs and model uncertainty.
+Candidate structure templates (kept intentionally small):
+vertical spreads (debit/credit)
+calendars/diagonals (fixed or delta-aligned strikes)
+iron condors (defined risk)
+butterflies (defined risk; targeted pin/range)
+long/short straddles/strangles only when explicitly justified by event premium vs expected move
+(and with strict risk caps)
+Scoring objective (one practical choice):
+where ModelUncertaintyPenalty is computed by re-running the scenario engine with pessimistic
+perturbations (e.g., 50% less IV crush, 30% higher jump variance, wider spreads) and penalizing structures
+whose EV is fragile.
+Why this is realistic: options premia (variance/skew) exist because tail risk is priced; naive EV maximization
+will concentrate in short gamma/short vega “pennies” unless you explicitly penalize CVaR and model error—
+exactly what this objective does. 
+Layer E — Execution engine
+Execution logic must be formalized as a state machine.
+1. 
+r =t+Δ σ ϵ, ϵ ∼t Δ N(0,1)
+2. t 
+e
+r ←t 
+e r +t 
+e J, J ∼MixtureNormal(π,μ ,σ ,μ ,σ )1 1 2 2
+3. 
+σ (t+imp Δ) =σ (t)+imp κ( −σˉ σ (t))Δ+imp ηΔW−c 1 
+eventt≥t 
+e
+c 
+event
+47
+• 
+• 
+• 
+• 
+• 
+ −structuremax
+after costs
+E[P&L] λ −1
+tail
+CVaR(Loss)α λ 
+2
+robustness
+ModelUncertaintyPenalty
+48
+7
+
+Inputs: candidate structure + target price + live quotes; liquidity metrics; time-of-day; recent fill stats.
+Rules that should be hard-coded:
+No-trade conditions:
+relative spread too wide: 
+open interest below threshold; stale quotes; abnormal mismatch between legs 
+projected edge smaller than conservative spread+slippage estimate 
+Entry method: limit order at a controlled price (e.g., midpoint ± a fraction of spread); allow a
+bounded number of reprices. 
+Order “patience”: cancel if not filled within  unless edge increases. 
+Exit method: symmetric logic; for risk exits, allow more aggressiveness (but log the slippage as a
+labeled training signal). 
+Optional: use broker algos (e.g., IB Adaptive) for wide spreads, but treat it as a selectable execution
+policy with its own learned slippage distribution. 
+Outputs: fills, timestamps, quotes at decision time, estimated vs actual costs.
+Layer F — Learning loop
+You need three labels per trade, not one:
+Thesis label: did the hypothesized phenomenon occur? 
+example for earnings vol: did IV crush happen relative to baseline? 
+example for VRP capture: was realized variance lower than implied over the holding horizon? 
+Structure label: did the chosen structure convert the thesis into P&L efficiently? (theta/vega/gamma
+profile correctness) 
+Execution label: did fills match the assumed cost model? (spread paid, missed fills, adverse
+selection)
+Then update:
+execution cost model (per underlying/DTE/time-of-day)
+event jump distribution and IV crush parameters
+regime classifier thresholds (when does the strategy stop trading?)
+A critical empirical caution: option quote data can be noisy, and microstructure biases can distort inference
+if you naïvely treat mid quotes as executable prices. 
+Strategy niches that are plausibly viable for a solo automated
+system
+Below is a realistic view: what can be automated without latency, where edge could plausibly exist, and what
+risk you must pay for it.
+• 
+• >midask−bid s 
+max
+• 
+• 
+• 
+• T 
+max
+• 
+• 
+33
+1. 
+2. 
+3. 40
+4. 
+5. 
+• 
+• 
+• 
+49
+8
+
+Earnings volatility trades
+Core  idea: trade  the  difference  between  (a)  event-implied  move  priced  into  the  front  expiry  and  (b)
+expected realized move plus post-event IV dynamics.
+Empirical  anchors:  implied  volatility  behavior  and  changes  around  earnings  are  documented;  implied
+volatility often drops after earnings on average, consistent with uncertainty resolution. 
+Most automation-feasible structures:
+Calendars/diagonals: short the near-term event vol, long the back-month to reduce tail blow-up
+from a single jump; profits from IV crush concentrated in front expiry and term-structure
+normalization.
+Defined-risk iron condors (only in very liquid names): monetize inflated event IV but cap disaster via
+wings; still exposed to gap risk beyond wings.
+Competition: high in megacaps; moderate in mid-liquidity names but spreads get worse (costs rise). The
+optimizer must explicitly reject trades where spread costs consume edge.
+Scalability: moderate; small accounts can play 1-lot calendars/spreads; scaling is mostly linear until liquidity
+constraints appear .
+Post-earnings drift using options
+Post-earnings-announcement drift (PEAD) is a documented phenomenon in the equity literature; recent
+reviews summarize the evidence and its persistence/attenuation. 
+But  options  overlay  is  tricky: immediately  after  earnings,  IV  often  collapses;  directional  options  can
+become cheaper , but spreads can still be wide and the drift signal is weak/noisy.
+Automation-feasible implementation (if you do it at all):
+Use the LLM to classify earnings text into “high surprise likelihood” + sentiment direction, but then
+express via vertical spreads (defined risk) rather than outright long calls/puts.
+Require that directional EV remains positive after conservative spread assumptions; reject if IV/skew
+pricing implies too much premium.
+Competition: extremely high; drift is widely known; edge is likely small and regime-dependent.
+Scalability: limited; works best on liquid names with tight spreads.
+Index volatility and VRP harvesting (SPY/QQQ class)
+The most intellectually coherent “retail quant” route is  systematic volatility risk premium capture with
+tight risk controls. The variance risk premium is extensively studied and can be proxied by the difference
+between option-implied variance (variance swap replication) and realized variance. 
+50
+• 
+• 
+51
+• 
+• 
+3
+9
+
+Structures that fit retail constraints:
+Defined-risk put spreads / iron condors at 30–60 DTE, sized small, rebalanced weekly; avoid short-
+dated high gamma.
+Crash-aware overlays: allocate a small, persistent tail hedge budget (e.g., small far-OTM puts) to
+mitigate regime kill; this reduces EV but stabilizes survival odds.
+Competition: high,  but  VRP  is  a  risk  premium—not  a  “free  lunch  mispricing.”  The  question  becomes
+whether your system can capture it without being wiped out.
+Scalability: strong up to retail size; liquidity is deep in major index ETFs, but you still pay spreads.
+Macro event trades (CPI, FOMC)
+Macro event schedules are known in advance (e.g., CPI release dates by BLS; FOMC meeting calendar by the
+Fed). 
+Edge hypothesis: markets may systematically over/underprice event risk in the front expiry, creating term-
+structure kinks that a calendar/diagonal can monetize—if your event jump model is calibrated and your
+execution costs are controlled.
+Best structures:
+Short-front / long-back calendars around scheduled releases (avoid ultra-short 0DTE; you have no
+latency).
+Avoid pure short straddles unless you have strict disaster caps and high confidence in cost model.
+Competition: very high (macro options flows are heavily professionalized).
+Automation  feasibility: medium;  calendars  are  automation-friendly;  risk  management  must  be
+conservative.
+Skew exploitation (put spreads vs call spreads)
+Downside skew and skew risk premia are documented in equity index options; the literature ties skew to
+priced crash/jump risk and demand pressure. 
+Edge  hypothesis: relative-value  opportunities  in  skew  steepness  (e.g.,  put  spread  pricing  vs  expected
+downside tail under your physical model) may appear in certain regimes.
+Automation-feasible tactic:
+Fit skew features from the IV surface.
+Trade vertical put spreads instead of naked puts to cap gap risk.
+Require edge robustness under stress scenarios (higher jump probability).
+Competition: high; skew is “expensive” for a reason; you are being paid (if at all) to take tail risk.
+• 
+• 
+52
+• 
+• 
+53
+• 
+• 
+• 
+10
+
+Calendar spreads and term-structure mispricing as the primary niche
+If  you  must  pick  one  niche  that  is  both  (a)  automatable  and  (b)  not  purely  latency-driven,  it  is  term-
+structure relative value (calendars/diagonals) around events and regimes.
+Why: it naturally emphasizes structure selection, explicitly depends on vol surface + term structure, and
+can be engineered to have better worst-case behavior than naked short-vol. It also matches the “surface +
+scenario engine + optimizer” architecture you want.
+What fails and why these approaches reliably blow up
+Direction-only prediction models. The failure mode is not that predicting direction is impossible; it is that
+even a decent directional signal can have negative options EV if you ignore IV and convexity. Option prices
+embed implied volatility and higher-moment pricing; paying too much for convexity is the fastest way to
+lose despite being “right” about direction. 
+LLM-only trading systems. LLM outputs are not calibrated probability distributions over returns, and they
+are especially weak on market microstructure and cost modeling. In this architecture, LLMs are constrained
+to produce structured features (event classification, uncertainty), never trades.
+Ignoring implied volatility surface. If you don’t model skew and term structure, you cannot even define
+what  “cheap”  or  “rich”  means  in  options.  Practical  smile  modeling  (SABR/SVI  families)  exists  precisely
+because constant-vol assumptions fail in real markets. 
+Ignoring spreads/slippage. Many option EV edges are on the order of a few basis points of notional per
+day; spreads can be larger than the modeled edge, especially for far OTM or low-liquidity series. Spread/
+liquidity variation in options is empirically meaningful, and microstructure noise can distort inference. 
+Overfitting via backtests and “strategy factories.” This is a dominant failure mode in systematic trading
+research: testing many variants on the same data creates selection bias and data snooping. The “Probability
+of Backtest Overfitting” framework (David H. Bailey and coauthors) formalizes why picking the best
+backtest among many tends to disappoint out of sample; Halbert White’s “Reality Check” addresses data
+snooping in model selection. 
+A  production  system  must  therefore  treat  evaluation  as  a  controlled  experiment  (walk-forward,  strict
+separation, limited hyperparameter freedom), not a backtest leaderboard.
+Data requirements that are minimally sufficient versus ideal
+Minimum viable dataset
+This is the minimum dataset that supports surface modeling + execution-realistic EV:
+Underlying OHLCV: at least daily bars; better: 5–15 minute bars during market hours for volatility
+estimation and event windows.
+54
+15
+55
+56
+57
+• 
+11
+
+Options chain snapshots: at least daily end-of-day chain; plus higher frequency (e.g., hourly or
+every few minutes) on trade decision windows to log what you could actually execute.
+For each option series in the snapshot: bid, ask, last, size (if available), open interest, volume. OPRA
+is the consolidated source of U.S. listed option quotes/trades in the infrastructure sense, but retail
+implementations usually consume via broker/vendor . 
+Event calendar: earnings dates (from filings/vendor); macro schedule (Fed + BLS calendars). 
+Filings ingestion: EDGAR API access for automated event tagging and document retrieval. 
+Execution logs: every order attempt, quote at submission time, fill/no-fill, time-to-fill, commissions/
+fees, partial fills.
+Without execution logs, you cannot learn realistic slippage models; without chain snapshots, you cannot
+reconstruct what the optimizer “saw.”
+Ideal dataset
+The ideal dataset reduces model risk and lets you model fill probability better:
+Higher-frequency option quote/trade data around execution (millisecond not required; but sub-
+minute snapshots help). 
+Per-leg execution data and order book proxies (if your broker provides). 
+Dividend data and corporate actions, to model early exercise risk for American options. 
+Cross-asset vol indicators (e.g., volatility indices, rates) to improve regime classification; Cboe
+volatility index methodology documents the concept of model-free implied variance from option
+prices. 
+What can be approximated vs required
+Required: bid/ask at decision time; otherwise your cost model is fantasy. 
+Approximatable: risk-free rate (short rate proxy), detailed order book depth (can be approximated
+by spread + size + historical fill stats), and full-tick OPRA (expensive) if you’re not doing high-
+frequency.
+Build plan and concrete success criteria
+Week one to two
+Build the “data + execution truth” spine first:
+Market data ingestion: underlying bars + chain snapshots into a time-series store.
+A surface fitter that produces SVI params per expiry and surface quality flags. 
+Broker connectivity and execution logger (orders, quotes, fills). If using Interactive Brokers, their API
+docs cover order placement and order types accessible programmatically. 
+A paper-trading loop that runs end-to-end daily: build state → generate candidates → simulate EV →
+attempt orders → log.
+Deliverable: every “trade idea” must have a stored record of (i) the surface, (ii) the scenario assumptions,
+and (iii) the exact quotes used.
+• 
+• 
+30
+• 46
+• 42
+• 
+• 
+• 
+• 
+• 
+58
+• 
+• 
+• 
+• 16
+• 
+59
+• 
+12
+
+Month one
+Implement one constrained strategy family with conservative rules:
+Pick a single universe (e.g., 2–4 very liquid underlyings only).
+Start with calendar spreads around scheduled events (earnings or macro) where the edge
+hypothesis is “front vol mean-reverts/crushes.” 
+Implement strict no-trade filters (spread thresholds, OI thresholds, time-to-expiry bands).
+Validate execution model: measure realized spread paid vs assumed.
+Deliverable: a monthly report generated automatically with realized EV decomposition: - theoretical edge
+(model EV)
+- spread/fees slippage
+- residual (model error)
+Month two to three
+Expand modeling where it matters:
+Add regime classification features (IV term structure + RV) and make trading conditional on regimes.
+Upgrade scenario engine with calibrated event jumps and IV crush distributions per event type. 
+Add alternative structures (iron condor , vertical spreads) but keep template count small to avoid
+combinatorial overfitting. 
+Add explicit tail stress tests (jump size ×2, IV crush ×0.5, spread ×1.5).
+Deliverable: optimizer chooses among 3–6 structure templates with a stable EV/CVaR objective.
+Month three to six
+Turn it into a learning system:
+Bandit-style allocation across strategy templates conditioned on regime (not a giant ML predictor).
+Continuous re-estimation of execution cost distributions, and automatic tightening of filters when
+execution deteriorates.
+Event-text extraction pipeline from EDGAR, producing uncertainty features, but kept strictly as inputs
+to risk sizing and scenario stress. 
+Deliverable: the system can reduce risk and trading frequency automatically during stressed regimes while
+maintaining positive net expectancy in normal regimes.
+Success criteria that are actually meaningful
+Because strategies can look good for months and then die in a single tail event, success must be defined in
+a way that emphasizes survival and after-cost reality:
+Positive realized expectancy after costs: average net P&L per trade and per day after all fees/
+spreads, measured on live or paper-live fills (not backtest mids). 
+• 
+• 
+60
+• 
+• 
+• 
+• 47
+• 
+• 
+• 
+• 
+• 
+61
+• 
+13
+
+Drawdown control: a hard max drawdown target (e.g., <15–25% peak-to-trough on $5K–$50K
+accounts), with enforced “stop trading / de-risk” logic. 
+Regime robustness: profitability not confined to one volatility regime; if the system only works in
+low vol, it must automatically detect high vol and stand down. 
+Scalability: ability to scale from $5K to $50K primarily by increasing trade count and contract count
+without sharply worsening spreads paid (tracked in execution logs). 
+Edge attribution consistency: the EV decomposition should show that profits come from the
+hypothesized premium (term structure normalization, VRP capture), not from accidental delta bets.
+If these are met for a sustained period (months) in paper-live and then live-sized micro lots, you have
+something that could plausibly “compete with lower-tier professional quant desks” in the narrow sense of
+having  a  coherent  edge  hypothesis,  execution  realism,  and  adaptive  risk  controls—without  relying  on
+latency.
+Variance Risk Premia∗ - NYU Tandon School of Engineering
+https://engineering.nyu.edu/sites/default/files/2019-01/CarrReviewofFinStudiesMarch2009-a.pdf?utm_source=chatgpt.com
+OPRA | Home
+https://www.opraplan.com/?utm_source=chatgpt.com
+Stock Return Characteristics, Skew Laws, and the ...
+https://www.people.umass.edu/nkapadia/docs/Bakshi_Kapadia_Madan_2003_RFS.pdf?utm_source=chatgpt.com
+The options market response to accounting earnings ...
+https://www.sciencedirect.com/science/article/abs/pii/S104244311200008X?utm_source=chatgpt.com
+Trading Options: Understanding Assignment
+https://www.finra.org/investors/insights/trading-options-understanding-assignment?utm_source=chatgpt.com
+Trading activity and bidБ€“ask spreads of individual equity ...
+https://www-2.rotman.utoronto.ca/~wei/research/JBF_2010.pdf?utm_source=chatgpt.com
+EDGAR Application Programming Interfaces (APIs)
+https://www.sec.gov/search-filings/edgar-application-programming-interfaces?utm_source=chatgpt.com
+The Pricing of Options and Corporate Liabilities Author(s)
+https://www.cs.princeton.edu/courses/archive/fall08/cos323/papers/black_scholes73.pdf?utm_source=chatgpt.com
+A review of the Post-Earnings-Announcement Drift
+https://www.sciencedirect.com/science/article/pii/S2214635020303750?utm_source=chatgpt.com
+Learning the Greeks: An Expert's Perspective
+https://www.cboe.com/insights/posts/learning-the-greeks-an-experts-perspective/?utm_source=chatgpt.com
+Smile Risk
+https://www.deriscope.com/docs/Hagan_2002.pdf?utm_source=chatgpt.com
+Arbitrage-free SVI volatility surfaces
+https://www.imperial.ac.uk/media/imperial-college/research-centres-and-groups/stochastic-analysis-group/
+preprints-2012/12-11.pdf?utm_source=chatgpt.com
+Day Trading | FINRA.org
+https://www.finra.org/investors/investing/investment-products/stocks/day-trading?utm_source=chatgpt.com
+• 
+• 
+• 
+• 
+1 3 18 40 48 54
+2 30
+4 53
+5 14 20 24 32 47 50 60
+6 36
+7 31 55
+8 13 22 41 42 43 61
+9 11
+10 44 51
+12
+15
+16 38
+17 21 37
+14
+
+Prices of State-Contingent Claims Implicit in Option Prices
+https://derivativesacademy.com/storage/uploads/files/modules/resources/
+1702215622_breeden_and_litzenberger_1978_prices_of_state_contingent_claims_implicit_in_option_prices.pdf?
+utm_source=chatgpt.com
+RiskMetrics Technical Document
+https://www.msci.com/documents/10199/5915b101-4206-4ba0-aee2-3449d5c7e95a?utm_source=chatgpt.com
+Robert F. Engle
+https://www.econ.uiuc.edu/~econ536/Papers/engle82.pdf?utm_source=chatgpt.com
+Retail limit orders | Review of Finance - Oxford Academic
+https://academic.oup.com/rof/article/30/2/459/8277182?utm_source=chatgpt.com
+Optimal Execution of Portfolio Transactions∗
+https://www.smallake.kr/wp-content/uploads/2016/03/optliq.pdf?utm_source=chatgpt.com
+IBKR Order Types, Algos and Tools
+https://www.interactivebrokers.com/en/trading/ordertypes.php?utm_source=chatgpt.com
+A New Interpretation of Information Rate
+https://www.princeton.edu/~wbialek/rome/refs/kelly_56.pdf?utm_source=chatgpt.com
+The Fed - Meeting calendars and information
+https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm?utm_source=chatgpt.com
+Very Noisy Option Prices and Inference Regarding the ...
+https://faculty.marshall.usc.edu/Christopher-Jones/pdf/duarte_jones_wang_2022.pdf?utm_source=chatgpt.com
+Schedule of Releases for the Consumer Price Index
+https://www.bls.gov/schedule/news_release/cpi.htm?utm_source=chatgpt.com
+THE PROBABILITY OF BACKTEST OVERFITTING
+https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf?utm_source=chatgpt.com
+Cboe Volatility Index Mathematics Methodology
+https://cdn.cboe.com/resources/indices/Cboe_Volatility_Index_Mathematics_Methodology.pdf?utm_source=chatgpt.com
+Placing Orders using TWS Python API | Trading Lesson
+https://www.interactivebrokers.com/campus/trading-lessons/python-placing-orders/?utm_source=chatgpt.com
+19 56
+23 35 39
+25
+26 34
+27
+28 33 45
+29
+46
+49
+52
+57
+58
+59
+15

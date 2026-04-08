@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 import logging
+from typing import Callable
 
 from app.models import PortfolioSnapshot, Signal
+from app.risk.models import RiskTransitionEvent
 
 
 @dataclass(slots=True)
@@ -16,13 +18,22 @@ class RiskState:
 
 
 class RiskManager:
-    def __init__(self, max_daily_loss_pct: float, max_total_exposure_pct: float, max_position_per_trade_pct: float, max_failed_trades_per_day: int, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        max_daily_loss_pct: float,
+        max_total_exposure_pct: float,
+        max_position_per_trade_pct: float,
+        max_failed_trades_per_day: int,
+        logger: logging.Logger | None = None,
+        event_recorder: Callable[[RiskTransitionEvent], None] | None = None,
+    ) -> None:
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_total_exposure_pct = max_total_exposure_pct
         self.max_position_per_trade_pct = max_position_per_trade_pct
         self.max_failed_trades_per_day = max_failed_trades_per_day
         self.state = RiskState(day=date.today())
         self.logger = logger
+        self.event_recorder = event_recorder
 
     def _roll_day(self) -> None:
         if self.state.day != date.today():
@@ -34,10 +45,20 @@ class RiskManager:
             self.state.reasons.append(reason)
         if self.logger is not None:
             self.logger.error("kill_switch_triggered", extra={"event": {"reason": reason, "details": details or {}}})
+        if self.event_recorder is not None:
+            self.event_recorder(RiskTransitionEvent(state="killed", reason=reason, details=details or {}))
 
     def record_failed_trade(self) -> None:
         self._roll_day()
         self.state.failed_trades += 1
+        if self.event_recorder is not None:
+            self.event_recorder(
+                RiskTransitionEvent(
+                    state="active",
+                    reason="failed_trade_recorded",
+                    details={"failed_trades": self.state.failed_trades},
+                )
+            )
         if self.state.failed_trades >= self.max_failed_trades_per_day:
             self.kill("failed_trades_limit", {"failed_trades": self.state.failed_trades})
 

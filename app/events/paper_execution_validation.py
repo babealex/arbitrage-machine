@@ -11,10 +11,15 @@ from app.db import Database
 from app.events.models import BrokerFill, TradeIdea
 from app.execution.broker import PaperBroker, PaperExecutionResult
 from app.execution.event_engine import EventExecutionEngine
+from app.execution.router import ExecutionRouter
 from app.persistence.contracts import EventEntryQueueRecord, TradeCandidateRecord
 from app.persistence.event_repo import EventRepository
+from app.persistence.kalshi_repo import KalshiRepository
+from app.persistence.market_state_repo import MarketStateRepository
 from app.persistence.reporting_repo import ReportingRepository
 from app.reporting import PaperTradingReporter, build_event_run_manifest
+from app.portfolio.state import PortfolioState
+from app.risk.manager import RiskManager
 
 
 @dataclass(slots=True)
@@ -159,6 +164,24 @@ class LegacyOptimisticPaperBroker:
     def planned_exit_at(self, max_hold_seconds: int) -> datetime:
         return datetime.now(timezone.utc) + timedelta(seconds=max_hold_seconds)
 
+    def snapshot_order_book(self, symbol: str, signal_ts=None):
+        from app.execution.broker import PaperBookLevel, PaperOrderBook
+
+        ts = signal_ts.astimezone(timezone.utc) if signal_ts is not None else datetime.now(timezone.utc)
+        price = self._price_fetcher(symbol)
+        if price is None:
+            return None
+        return PaperOrderBook(
+            symbol=symbol,
+            mid_price=price,
+            bid_price=price,
+            ask_price=price,
+            bid_levels=[PaperBookLevel(price=price, size=10_000)],
+            ask_levels=[PaperBookLevel(price=price, size=10_000)],
+            ts=ts,
+            source="legacy_mid_quote",
+        )
+
 
 def run_paper_execution_comparison(output_dir: Path) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +234,21 @@ def _run_scenario(base_dir: Path, scenario: ValidationScenario, *, model: str) -
             event_paper_depth_levels=scenario.depth_levels,
             event_paper_passive_recheck_seconds=1.0,
         )
-    engine = EventExecutionEngine(event_repo, broker)
+    signal_repo = KalshiRepository(db)
+    engine = EventExecutionEngine(
+        event_repo,
+        signal_repo,
+        broker,
+        ExecutionRouter(
+            None,
+            signal_repo,
+            PortfolioState(None),
+            RiskManager(1.0, 10.0, 10.0, 10),
+            __import__("logging").getLogger("event-validation"),
+            False,
+            market_state_repo=MarketStateRepository(db),
+        ),
+    )
     candidate_id = event_repo.persist_trade_candidate(
         TradeCandidateRecord(
             classified_event_id=1,
@@ -328,7 +365,7 @@ def _aggregate_results(results: list[dict]) -> dict:
         "net_pnl_dollars": sum(pnl_values),
         "average_return_pct": _avg(closed_returns),
         "hit_rate": (sum(1 for value in closed_returns if value > 0) / len(closed_returns)) if closed_returns else 0.0,
-        "sharpe_like": _sharpe_like(closed_returns),
+        "nonstandard_sharpe_like": _sharpe_like(closed_returns),
         "max_drawdown_proxy": _max_drawdown_proxy(pnl_values),
     }
 
@@ -381,10 +418,10 @@ def _extract_metrics(result: dict) -> dict:
         "net_pnl_dollars": round(net_pnl, 6),
         "average_return_pct": _avg(closed_returns),
         "hit_rate": (sum(1 for value in closed_returns if value > 0) / len(closed_returns)) if closed_returns else 0.0,
-        "sharpe_like": _sharpe_like(closed_returns),
+        "nonstandard_sharpe_like": _sharpe_like(closed_returns),
         "max_drawdown_proxy": _max_drawdown_proxy([float(row["return_pct"]) for row in outcome_rows]),
         "queue_status_breakdown": result["report"]["event_driven_summary"]["queue_status_breakdown"],
-        "paper_execution_decision_breakdown": result["report"]["event_driven_summary"]["paper_execution_decision_breakdown"],
+        "shared_execution_orders": result["report"]["execution_report"]["by_strategy"].get("event_driven", {}).get("orders", 0),
     }
 
 
@@ -399,7 +436,7 @@ def _delta_summary(left: dict, right: dict) -> dict:
         "net_pnl_dollars",
         "average_return_pct",
         "hit_rate",
-        "sharpe_like",
+        "nonstandard_sharpe_like",
         "max_drawdown_proxy",
     ]
     delta = {}
@@ -471,14 +508,14 @@ def _row_to_dict(row) -> dict:
 
 def _avg(values) -> float:
     values = list(values)
-    return sum(values) / len(values) if values else 0.0
+    return math.fsum(values) / len(values) if values else 0.0
 
 
 def _sharpe_like(returns: list[float]) -> float:
     if len(returns) < 2:
         return 0.0
     mean = _avg(returns)
-    variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
+    variance = math.fsum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
     if variance <= 0:
         return 0.0
     return mean / math.sqrt(variance)

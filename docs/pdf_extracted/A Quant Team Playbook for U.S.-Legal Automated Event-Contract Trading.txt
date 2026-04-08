@@ -1,0 +1,844 @@
+A Quant Team Playbook for U.S.-Legal Automated
+Event-Contract Trading
+Executive Summary
+A small retail account ($100–$1,000) running on an always-on home machine can build a fully automated
+event-contract system in days, but the set of durable, implementable edges is narrow. The most robust
+edges  are  not  “forecasting  the  world  better”  but  exploiting  structural  constraints  and  cross-market
+mapping errors that persist because of  fees, fragmentation, thin books, and retail participation—
+especially  in  laddered  economic  contracts  where  many  discrete  markets  must  collectively  encode  a
+coherent distribution. 
+From a U.S.-legal standpoint, the core venue is Kalshi, which the Commodity Futures Trading Commission
+ designated as a contract market (DCM) in 2020, making it the cleanest “retail-accessible + regulated +
+API-friendly” prediction-market-like venue from the United States. 
+This playbook focuses on:
+True probability modeling for macro events (Fed decisions, CPI, unemployment) using professional
+market-implied frameworks (Fed funds futures, OIS, options-implied distributions, surveys).
+Microstructure realities for Kalshi (primary), plus Polymarket and PredictIt as comparative case
+studies (with U.S. legal constraints clearly noted).
+Execution in thin books (the #1 failure point for small automated traders).
+A complete arbitrage/mismatch landscape with implementability notes, robust signal filters, and
+sizing/risk control suitable for $100–$10,000.
+Bias-resistant validation methods when historical data is sparse.
+A professional-grade system blueprint and a roadmap from $1,000 to $10,000+ that does not rely on
+fantasy returns.
+Facts vs assumptions
+Facts (documented by primary sources used here): - CME FedWatch derives unconditional probabilities
+of FOMC outcomes from 30‑Day Fed Funds futures, assumes 25 bp increments, and provides explicit step-
+by-step  formulas  for  building  a  binary  probability  tree.   -  OIS  floating  legs  are  based  on  daily
+compounded overnight rates, and (for “vanilla” short-maturity U.S. OIS) cashflows are typically netted and
+exchanged  at  maturity.   -  Kalshi’s  fee  schedule  is  price-dependent:  taker  fees  are
+ceil(0.07 × C × P × (1–P)) (maker fees ceil(0.0175 × C × P × (1–P)) where applicable).
+ -  Kalshi’s  API  supports  fill_or_kill,  immediate_or_cancel,  good_till_canceled,  plus
+post_only, and buy_max_cost which triggers FOK behavior .  - Kalshi’s order book representation
+relies on YES/NO reciprocity (“NO bid at Y equals YES ask at 1–Y”), and the orderbook API returns bids only
+(asks are implied).   - Polymarket operates a CLOB with offchain matching and onchain settlement;
+provides WebSocket streaming for book updates; but the CFTC ordered Polymarket to pay a penalty and
+1
+2
+3
+• 
+• 
+• 
+• 
+• 
+• 
+4
+5
+6
+7
+8
+1
+
+wind down noncompliant markets, and the order required ceasing U.S. operations for unregistered event-
+based binary options.  - PredictIt operates under CFTC staff no-action positions with explicit conditions
+and evolving caps; CFTC Letter 25‑20 (amending 14‑130) describes restrictions and updates (e.g., removing
+the 5,000-trader cap and tying per-participant investment cap to FECA limits). 
+Assumptions (you must empirically measure for your specific deployment): - How long specific Kalshi
+mispricings last in the market categories you trade (minutes vs hours). - Your achievable fill quality (taker vs
+maker mix) and the realized “edge after fees” distribution. - Whether any cross-market mismatch is due to
+genuine inefficiency vs definition mismatch, risk premia, or temporary liquidity vacuum.
+True Probability Modeling for Macro Events
+Professional “true probabilities” are almost always  market-implied or  model-implied probabilities under
+explicit measures and assumptions—not metaphysical truth. The correct posture is:
+Derive a risk-neutral (or risk-adjusted) distribution from macro-linked instruments.
+Apply a contract mapping layer into the event-contract payoff definitions.
+Trade only when the edge exceeds fees + execution risk + model error by a wide margin.
+Fed funds futures implied probabilities (CME FedWatch methodology)
+CME FedWatch’s core input is the 30‑Day Federal Funds futures (ZQ) price for each contract month. CME
+explicitly states the futures price incorporates expectations of the average daily effective federal funds
+rate (EFFR) during the contract month, and uses these monthly averages to build a probability tree for
+upcoming FOMC outcomes. 
+Futures price → implied average rate
+CME’s implied month-average EFFR is: 
+CME’s worked example shows this explicitly (e.g., “Implied Avg. EFFR Rate = 100 – price”). 
+Handling meeting months: day-weighting pre/post meeting
+In an FOMC meeting month, the month-average EFFR is a weighted average of: - the start-of-month EFFR
+(before the meeting), - the end-of-month EFFR (after the meeting),
+with weights determined by calendar days before/after the meeting. CME shows a formula using  days
+before and  days after the meeting. 
+A generic representation is: 
+9
+10
+• 
+• 
+• 
+11
+EFFR(Avg) =T 100−ZQ price
+T
+12
+N
+M 12
+EFFR(Avg)= 
+N+M
+N⋅r +M⋅r 
+pre post
+2
+
+Then solve for the unknown rate (pre or post) given the other . CME provides an explicit equivalent
+rearrangement for months with meetings. 
+Converting implied rate changes into probabilities
+CME’s introductory binary case (hike vs no hike) expresses: 
+with the key assumption that rate changes are in 25 bp increments. 
+More generally, CME’s method converts the expected EFFR change into an expected number of 25 bp
+moves: 
+and decomposes  into integer part  and fractional part . The immediate-node
+probabilities become: -  - 
+CME outlines this as an explicit step-by-step procedure and then builds a binary probability tree across
+sequential meetings by multiplying node probabilities. 
+Implementation note: This “two adjacent outcomes” rule bakes in a modeling choice: probabilities are
+concentrated on neighboring 25 bp outcomes around the implied expectation. That is a feature (stability)
+and a limitation (it can under-represent tail outcomes). 
+Overnight Index Swaps (OIS)
+OIS are a professional-grade way to infer the  expected path of overnight rates over a horizon, often
+interpreted as a proxy for expected policy rates plus/minus premia.
+At a mechanical level, vanilla OIS floating legs are computed from daily compounded overnight rates, and
+for short maturities (≤1 year) are often settled with a single net exchange at the end of the contract. 
+A standard compounding expression (shown in quantitative finance teaching materials) is: 
+and the corresponding coupon rate over accrual fraction  can be written: 
+12
+P(Hike) = , P(NoHike) =25 bp
+EFFR(end)−EFFR(start) 1−P(Hike)
+13
+x≡ 
+0.25
+ΔEFFR
+x k =⌊x⌋ m=x−k
+P(k moves) =1−m P(k+1 moves) =m
+14
+13
+5
+Compounded return= (1+
+i=1
+∏
+k
+Lτ )−i i 1
+τ(T ,T )0 1
+C =1 
+τ(T ,T )0 1
+(1+Lτ )−1∏i=1
+k i i
+15
+3
+
+How pros extract probabilities: In practice, desks fit an OIS curve (discount factors / forward rates),
+interpret it as a  risk-neutral expectation of short-term rates plus term premia, and derive meeting-to-
+meeting expectations by comparing forward segments around policy dates. The Bank of England notes
+that (in deep/liquid markets) OIS rates should reflect investors’ expectations of future short-term rates,
+while acknowledging term premia especially at longer horizons. 
+Options-implied distributions
+Options encode a full risk-neutral distribution (not just a mean) of an underlying variable. The canonical
+technique is the Breeden–Litzenberger relationship: under idealized assumptions, the risk-neutral density
+can be extracted from the second derivative of call prices with respect to strike (properly discounted).
+Central bank and international-institution research documents this approach and emphasizes estimation
+technique choices. 
+A commonly used expression is: 
+where  is the call price as a function of strike ,  is time to expiry, and  is the relevant discount
+rate. 
+How pros use it for macro events: - For Fed decisions, options on rate futures (or options on rates indices)
+can imply distributional shifts around meeting dates. - For CPI and jobs, options on equities/rates can imply
+“event risk” in volatility terms, but mapping that to a CPI-print distribution is indirect unless you have
+instruments directly linked to the macro print (rare for retail).
+Economist surveys and forecast distributions
+Surveys  are  used  operationally  as:  -  a  reference  “consensus  mean/median,”  -  a  dispersion  proxy
+(uncertainty), - and an anchor to separate expectations from term/risk premia in market-implied rates.
+Rate-expectations  research  explicitly  discusses  survey-augmented  approaches  (for  example,  contrasting
+OIS-augmented vs survey-augmented term-structure identification methods). 
+A practical survey-to-distribution mapping for an event  (CPI print, payrolls, unemployment rate) is often: -
+assume   where   is  consensus  and   is  calibrated  from  survey  dispersion  +  historical
+forecast errors, - then compute interval probabilities by integrating the distribution across contract bins.
+Why market-implied “true probabilities” differ from Kalshi prices
+Kalshi  prices  are  closer  to  “marginal  trading  prices  under  platform  frictions”  than  pure  risk-neutral
+probabilities because:
+Fees are nonlinear and state-dependent: taker fees peak near 50/50 and shrink toward the
+extremes per the published parabolic formula; this changes who trades, where liquidity
+concentrates, and what mispricings are economically tradable. 
+16
+17
+18
+f (K) =Q e 
+rT
+∂K2
+∂ C(K,T)2
+C(K,T) K T r
+18
+17
+X
+X∼N(μ,σ )2 μ σ
+• 
+19
+4
+
+Fragmentation: macro events are often listed as many discrete strikes/bins; thin liquidity in tails
+increases the probability of stale prices and constraint violations (academically discussed as a friction
+source). 
+Participant mix: retail-dominant venues tend to show more behavioral components, while futures/
+OIS/options are dominated by hedgers, dealers, and macro funds.
+Where mispricings occur between systems (high-level): 1. Mapping mismatches (definition/settlement/
+time): “what exactly settles the event contract” vs “what instrument-implied rates represent.” 2.  Liquidity
+vacuums creating temporary out-of-line prices in Kalshi bins/strikes that pros don’t bother to arbitrage
+because  the  gross  edge  is  small  relative  to  microstructure  risk  and  fees.  3.  Discrete  vs  continuous
+encoding: futures and swaps imply smooth expectations; Kalshi bins require a discrete distribution that
+must satisfy monotonicity/partition constraints.
+Market Microstructure Where Edge Hides
+Kalshi microstructure highlights
+Order book representation: Kalshi’s order book returns bids only and relies on the reciprocal relationship
+between YES and NO. A “NO bid at price ” corresponds to a “YES ask at .” This is not a UI quirk—it
+fundamentally affects how you compute executable prices and spreads. 
+Order  types  and  constraints  (API-level): -  time_in_force supports  fill_or_kill, 
+immediate_or_cancel, good_till_canceled.  - buy_max_cost forces fill-or-kill behavior when
+provided (critical for multi-leg risk control).  - post_only exists (maker-style behavior). 
+Fee structure: Kalshi fees follow the published parabolic formula and rounding rules; this has second-order
+effects like “minimum 1-cent fee cliffs” for very small sizes, and it changes the break-even spread required
+for makers vs takers. 
+API/contract  representation  changes  are  real  operational  risk: Kalshi’s  March  2026  “fixed-point
+migration” introduced subpenny pricing fields and fractional contract sizes, requiring careful handling of
+decimals and fee rounding math. If you ignore this, your bot misprices edges and mis-sizes orders. 
+Polymarket microstructure (comparative, with U.S. legality caveat)
+Polymarket describes a CLOB where orders are signed messages, matched offchain, and settle onchain;
+users can stream market data via WebSockets (market channel streams orderbook changes, price updates,
+trades). 
+However ,  U.S.-retail legality is constrained: the CFTC’s 2022 order required the operator to pay a civil
+monetary  penalty  and  wind  down  noncompliant  markets  and  cease  violations,  widely  interpreted  as
+requiring blocking U.S. users for those markets. 
+PredictIt microstructure (comparative)
+PredictIt has historically operated under CFTC staff no-action positions with explicit constraints that were
+recently amended. CFTC Letter 25‑20 discusses restrictions, including that it is a small-scale market and
+• 
+20
+• 
+Y 1−Y
+8
+21
+7 22
+23
+24
+25
+26
+5
+
+clarifies scope limitations (political events and questions under specified bounds), while changing trader
+limits and investment caps (linked to FECA limits, with the letter noting the current FECA limit figure). 
+PredictIt’s fee model (10% of profits on winning trades; plus withdrawal-related fees) materially changes the
+EV calculus and makes many “small edges” non-tradable compared with a low-fee CLOB. 
+Why inefficiencies persist and when they worsen
+Inefficiencies persist in event markets for structural reasons:
+Fragmentation across bins/strikes: the “true distribution” is split across many small markets, so
+enforcing global consistency requires specialized bots.
+Thin depth and infrequent updates: small markets can go stale.
+Retail-driven flow: more sentiment and less constraint-based arbitrage.
+Nonlinear fees: small mispricings are not worth arbitraging after fees. 
+Conditions that typically increase inefficiency (high-confidence, but still something you should measure): -
+long-dated markets, - tail strikes/bins, - low-attention windows (overnight, weekends), - immediately after
+new contract listings or rule/schema changes (e.g., pricing/quantity precision changes). 
+Execution and Arbitrage Playbook
+Execution is the dominant failure mode for small automated systems in thin books: you can be directionally
+correct and still lose money by paying spreads, fees, and legging losses.
+Optimal execution in thin books
+IOC vs FOK vs passive limits (Kalshi API specifics)
+FOK (fill_or_kill): best for “must be complete” legs, especially when your model edge is small.
+Kalshi supports FOK via time_in_force=fill_or_kill. 
+IOC (immediate_or_cancel): useful when partial fills are acceptable or when you are probing
+available liquidity quickly; explicitly supported by Kalshi. 
+Passive maker (post_only, typically with GTC): lowers fees (maker fee tier where applicable) but
+increases adverse-selection risk—especially for time-sensitive macro events. Kalshi supports 
+post_only. 
+Cost caps: buy_max_cost enforces FOK-like behavior with a defined max spend—useful for “do
+not exceed edge budget” execution. 
+Slippage modeling (actionable)
+For any market , define executable prices from the book:
+Best YES bid: 
+Best NO bid: 
+Because of reciprocity, the best YES ask is: 
+10
+27
+• 
+• 
+• 
+• 28
+24
+• 
+21
+• 
+21
+• 
+29
+• 
+7
+m
+• b 
+Y
+• b 
+N
+6
+
+Kalshi documents these equivalences directly. 
+Define your “all-in taker cost” per contract when buying YES at : 
+with Kalshi fee: 
+(where “round up” is to the next cent). 
+A practical slippage buffer for a small bot is: -  minimum “execution uncertainty buffer” on top of
+computed fees, unless you are using strict FOK at known prices.
+Legging risk in multi-leg trades
+Event-market arbitrage frequently requires multiple legs (partition, ladder spreads, cross-market hedges).
+Without atomic multi-leg execution, you face:
+partial fills,
+stale price movement between legs,
+ending up with directional exposure.
+Best practice for small accounts: prefer two-leg structures where one leg can be safely held temporarily
+or cheaply unwound, and require large pre-fee edge margins before attempting >2 legs.
+Arbitrage structures across event markets
+The table below is framed as a portfolio of play types. “Expected frequency/return” are deliberately stated
+as  ranges because  they  are  market-regime-dependent;  consider  them  hypotheses  to  be  validated,  not
+promises.
+Structure Core idea Frequency
+(typical)
+Return
+scale
+Capital
+needs Risk Difficulty
+Monotonicity
+arbitrage
+For nested
+thresholds, 
+ if 
+; trade
+verticals when
+violated
+Low–
+Moderate
+Small per
+trade but
+can be
+“structural”
+Low
+Mostly
+execution
+(legging)
+Moderate
+a =Y 1−b 
+N
+8
+a 
+Y
+cost=a +Y fee(a ,C=Y 1)
+fee= 0.07⋅C⋅P ⋅(1−P)⌈ ⌉
+6
+δ =$0.01
+• 
+• 
+• 
+P(above K) ≤2
+P(above K)1
+K >2 K
+1
+7
+
+Structure Core idea Frequency
+(typical)
+Return
+scale
+Capital
+needs Risk Difficulty
+Partition
+arbitrage
+For mutually
+exclusive
+exhaustive bins,
+sum of YES costs
+should ≈ 1; buy
+full set when <1
+after costs
+Low
+Often
+small;
+sometimes
+larger in
+chaos
+Medium
+(multi-
+leg)
+High
+legging
+risk
+Hard
+Cross-
+market
+arbitrage
+Compare event-
+contract implied
+probability to
+futures/OIS/
+options-implied;
+trade mismatch
+Moderate
+Usually
+small;
+occasionally
+large
+around
+repricings
+Low–
+Medium
+Model +
+mapping
+risk
+Moderate–
+Hard
+Temporal
+arbitrage
+Slow venue lags
+fast information
+sources pre/post
+release; trade the
+lag
+Moderate–
+High
+Highly
+variable Low
+Adverse
+selection +
+speed
+Hard
+Liquidity-
+imbalance
+arbitrage
+Provide liquidity
+where book
+imbalances imply
+temporary
+mispricing
+Moderate Small Low Fill
+uncertaintyModerate
+Important: On Kalshi, the fee function discourages tiny edges, so “frequency” is not the same as “tradable
+frequency.” Your minimum edge filter must be calibrated against the fee curve and rounding. 
+Signal filtering rules that are implementable
+Use filters that directly target “false edges”:
+Minimum net edge after fees and buffers
+Trade only if  (2¢) for taker-style execution in early versions; lower only after live-fill
+measurement. 
+Depth  filter Require  at  least   contracts  of  top-of-book  depth  on  the  relevant  side(s)  before
+attempting the order; otherwise you will get partials or move the price.
+28
+1. 
+Edge =net ( −p^ p )−exec fee(p )−exec δ
+Edge ≥net 0.02
+6
+2. C
+8
+
+Time-to-expiry filter Avoid the last X minutes before settlement in markets with known jump risk;
+use stricter FOK caps in the final hours.
+Schema/precision filter If a market has subpenny pricing or fractional contracts enabled, enforce
+strict decimal handling and more conservative rounding (Kalshi explicitly warns about intermediate
+precision up to 6 decimals in fee rounding math). 
+Cross-Market Mismatch Engineering
+Cross-market mismatch is often the single best “real edge” category because it anchors you to an external
+reference distribution that is not purely Kalshi’s internal consensus.
+Mapping Kalshi contracts to external macro instruments
+Fed decisions: from FedWatch distribution to Kalshi contracts
+The  cleanest  mapping  target  is  the  distribution  over  possible  target-rate  outcomes  implied  by  CME
+FedWatch (or your own replication of its method).
+Workflow:
+Build CME-style distribution for the relevant meeting date (binary tree across meetings if needed).
+CME’s methodology explicitly defines how to compute month-average EFFR from futures, solve start/
+end rates via day weights, and convert expected changes into discrete probabilities in 25 bp
+increments. 
+Translate EFFR outcomes into the event-contract settlement definition:
+If the contract is about “will the target range be X–Y,” map to a midpoint or upper-bound convention
+consistent with the contract terms (this is where many mapping errors occur).
+Compute a probability for each Kalshi outcome/bin.
+CPI and unemployment: practical reality
+Retail-accessible “direct” instruments for CPI-print distributions are limited. In practice, sophisticated desks
+use combinations of: - surveys and nowcasts for the mean, - historical error distributions for dispersion, -
+options-implied distributions on related assets for event risk adjustment, - and (when available) inflation-
+linked derivatives to refine the tails.
+For a small retail system, CPI/jobs are usually treated as: -  survey + historical surprise distribution,
+optionally  adjusted  by  market-implied  risk  measures  (equity  index  implied  volatility  around  release
+windows).
+Computing mismatch signals
+Let: -  = your externally implied “true” (risk-neutral or risk-adjusted) probability for the event. -  = the
+executable Kalshi price (ask if buying YES, bid if selling YES), computed using book reciprocity.  -  =
+fee per contract at price . 
+3. 
+4. 
+30
+1. 
+31
+2. 
+3. 
+4. 
+p^ p 
+exec
+8 f(p)
+p 6
+9
+
+For buying YES: - Profit if event occurs:  - Profit if not: 
+Expected value per contract: 
+(ignoring discounting, which is small for short-dated contracts).
+Define a robust “tradeable mismatch”: 
+Trade only when , where early-stage recommended  is 2–5¢ depending on how aggressive
+you want to be. The fee term is not optional; on Kalshi it is mechanically tied to  and rounding
+effects. 
+Validating mismatches statistically
+You want to avoid confusing  noise with  opportunity. Practical validation methods that work even with
+limited history:
+Out-of-sample “live paper” logging: Record every time  exceeds threshold and whether (a) you
+would have been filled at your assumed execution, and (b) the trade’s realized P&L after settlement.
+Bootstrap uncertainty for : When  comes from survey distributions, bootstrap historical forecast
+errors to generate confidence bands; only trade when mismatch exceeds the upper confidence
+bound of model error .
+Stability checks across sources: If FedWatch-implied and OIS-implied expectations disagree
+materially, lower position size—consensus disagreement is a red flag for hidden premia or mapping
+error . 
+Examples of real-world mismatch mechanisms
+Even without publishing a current trade recommendation, it’s useful to name archetypes:
+Bin inconsistency near “adjacent” outcomes: CME method often concentrates probability on two
+adjacent 25 bp outcomes in the nearest node; if a prediction market spreads probability across far
+tails inconsistently, intermediate bins can be under/overpriced. 
+Post-news “stale tails”: When attention shifts to the main outcome, tail bins can remain stale
+(especially if fees discourage arbitrage), creating monotonicity or partition violations. 
+Behavioral Mispricing and How to Detect It
+Behavioral biases are “high value” when they are systematic and persist long enough for a slow retail bot to
+harvest without speed advantages.
+1−p −exec f(p )exec −p −exec f(p )exec
+EV ≈ −p^ p −exec f(p )exec
+M=( −p^ p )−exec f(p )−exec δ
+M≥M 
+min M 
+min
+p(1−p)
+19
+• M
+• p^ p^
+• 
+32
+• 
+14
+• 
+33
+10
+
+Core behavioral patterns in prediction markets
+Overreaction to salient news: rapid shifts to extremes that overshoot (especially when liquidity is
+thin).
+Anchoring: prices cluster around round numbers or pre-event reference levels, even as external
+implied distributions shift.
+Herding: follow-the-tape behavior in a small venue where a few orders move the “last price.”
+Sentiment lag: prices adjust slower in less attended strike bins even when the central outcome
+updates quickly.
+Kalshi itself publishes educational content emphasizing how probabilities can move toward extremes as
+events unfold and traders update conditional probabilities—mechanically correct, but also a behavioral
+driver when traders extrapolate too aggressively. 
+Detecting behavioral mispricing algorithmically
+A practical framework is to treat behavioral signals as filters, not primary alpha, unless you have evidence.
+Implementable detectors:
+Dislocation vs external anchor
+If the Kalshi price moves > X cents in Y minutes but your external anchor  barely moves (FedWatch/
+OIS stable), classify as potential overreaction and reduce aggression on taker orders. 
+Order book imbalance
+Define imbalance: 
+where  and  are depth (contracts) within, say, 3 ticks of best on YES and NO.
+Large |I| in low-volume markets can indicate one-sided retail pressure rather than information.
+Last-trade vs book divergence
+If last trade price jumps but best bid/ask does not follow proportionally, treat as low-information
+print.
+Persistence tests
+For each detected “behavioral dislocation,” measure half-life of mean reversion in your collected
+history before trading it live.
+• 
+• 
+• 
+• 
+34
+1. 
+2. p^
+32
+3. 
+4. 
+I = 
+D +D 
+Y N
+D −D 
+Y N
+D 
+Y D 
+N
+5. 
+6. 
+7. 
+8. 
+9. 
+11
+
+Risk Management, Position Sizing, and Bias-Resistant Validation
+Kelly and fractional Kelly for binary contracts
+For a YES contract: - You pay  - You receive  if it resolves YES, else 
+The expected edge per contract is  (above). The Kelly-optimal fraction depends on the payoff odds
+and your probability estimate error . In small, model-uncertain systems, fractional Kelly is standard: use 10–
+25% of theoretical Kelly at most.
+Practical sizing rule for $100–$10,000:
+Base unit risk = 1% of equity per independent bet (or per leg if multi-leg).
+For higher uncertainty (cross-market mapping not fully validated), cut to 0.25–0.5%.
+Cap total open exposure at 20–30% of equity for an early-stage bot, because platform + operational
++ settlement risks dominate “market risk” at small scale.
+Drawdown control and risk of ruin
+For small systems, “risk of ruin” is more about operational blowups than pure betting odds.
+Non-negotiable controls:
+Daily loss limit (realized): 1–2% of equity.
+Weekly loss limit: 3–5% of equity.
+Max open positions: keep it small until fills/fees are empirically stable.
+Kill switch on abnormal conditions:
+repeated order rejects,
+data feed gaps,
+schema mismatches (precision changes).
+Kalshi’s fixed-point migration illustrates why schema changes are not theoretical; they happen and can
+silently break bots. 
+Backtesting without bias in event markets
+Event markets often lack long standardized histories. You must treat backtesting itself as an engineering
+product.
+A practical, bias-resistant validation ladder:
+Forward paper trading with full depth capture
+Subscribe to real-time order book updates and store snapshots/deltas.
+Store your computed signals and the exact orders you would send.
+Execution-realistic replay
+p+f 1 0
+ −p^ p−f
+• 
+• 
+• 
+• 
+• 
+• 
+• 
+• 
+• 
+• 
+24
+1. 
+2. 
+3. 
+4. 
+12
+
+Replay orderbook evolution and simulate fills:
+taker fills at executable prices,
+maker fills only when opposing trades cross your level,
+include fee formula and rounding. 
+No lookahead
+Ensure your external  uses only information available at that timestamp (e.g., futures prices at time
+t, not settlement).
+Survivorship control
+Log newly listed markets; do not only analyze markets that “happened to be liquid.”
+Stress tests
+Inject outages/reconnect events; ensure your system halts rather than trades blind.
+Professional System Design, Failure Modes, and Scaling Roadmap
+What a pro quant team would prioritize
+A professional team building this would emphasize:
+Data integrity and reproducible state (book reconstruction, schema versioning).
+Explicit mapping system (contract definitions → payoff functions → instrument link).
+Execution and risk as first-class modules (not afterthoughts).
+Continuous monitoring and incident response.
+Kalshi’s  API  documentation  explicitly  frames  the  API  as  supporting  real-time  market  data  and  trade
+execution, and binds usage to a developer agreement—professional systems treat this as an operational
+dependency. 
+Minimal professional architecture for a home deployment
+flowchart TD
+  A[Market Data Ingest<br/>WebSocket + REST snapshots] --> B[State Store<br/
+>order book + markets + fills]
+  B --> C[Mapping Layer<br/>contract -> payoff]
+  C --> D[External Model Engine<br/>FedWatch/OIS/options/surveys]
+  D --> E[Signal Engine<br/>mismatch + arb constraints]
+  E --> F[Execution Engine<br/>IOC/FOK/passive]
+  F --> G[Risk Engine<br/>limits + kill switch]
+  G --> H[Exchange API<br/>Kalshi primary]
+  F --> I[Telemetry<br/>logs + metrics]
+5. 
+◦ 
+◦ 
+◦ 35
+6. 
+7. p^
+8. 
+9. 
+10. 
+11. 
+• 
+• 
+• 
+• 
+36
+13
+
+  I --> J[Alerting<br/>email/SMS]
+  B --> K[Research Pipeline<br/>replay + evaluation]
+Top failure modes and how to prevent them
+Wrong mapping (definition mismatch)
+Prevent with contract-term parsing tests and a human-reviewed mapping file; do not assume names
+imply identical settlement.
+Execution mismatch (paper P&L not achievable live)
+Prevent with execution-realistic replay and conservative slippage buffers.
+Fee blindness
+Prevent  by  calculating  EV  using  the  actual  fee  formula  and  rounding  cliffs;  never  trade  “1-cent
+edges.” 
+Legging blowups
+Prevent by preferring 1–2 leg trades, using FOK on critical legs, and having immediate flatten logic;
+Kalshi’s order API supports FOK/IOC and max-cost caps. 
+Schema drift (precision changes)
+Prevent with schema-version checks and strict numeric typing (decimal fixed-point), especially post
+March 2026 changes. 
+Stale book / reconnect gaps
+Prevent by halting trading after reconnect until a full snapshot is rebuilt.
+Overfitting (especially for behavioral signals)
+Prevent by using behavioral signals only as filters until proven.
+Venue/legal drift
+Prevent by sticking to clearly U.S.-legal venues; Polymarket’s history shows enforcement can reshape
+access. 
+Operational outages
+Prevent with heartbeats, auto-restart, and “fail closed” posture.
+Capital lock and liquidity traps
+Prevent  by  sizing  small,  avoiding  thin  tail  bins  unless  edge  is  large,  and  diversifying  across
+independent strategies only after V1 works.
+Scaling roadmap from $1,000 to $10,000+
+The only realistic path is compounding modest edges with disciplined risk.
+1. 
+2. 
+3. 
+6
+4. 
+7
+5. 
+24
+6. 
+7. 
+8. 
+37
+9. 
+10. 
+14
+
+Phase goals (illustrative, not guaranteed):
+$1k → $2k: Prove operational reliability; trade only high-confidence signals (monotonicity/partition
+violations and large cross-market mismatches). Expect many flat weeks.
+$2k → $5k: Improve execution quality (more maker fills, tighter max-cost caps), expand to more
+macro series with similar structure; add diversification across independent event types.
+$5k → $10k+: Add hedging overlays (optional) in liquid macro instruments via a broker-accessible
+venue; only after you have stable mismatch statistics.
+Expected setbacks: temporary strategy death when a venue improves liquidity/market making, schema
+changes, and periods where external implied distributions disagree or carry large premia—your system
+must reduce risk automatically in those periods. 
+Optional extension into equities and macro-linked instruments
+The “pro” version of cross-market mismatch uses liquid hedges: - rate futures / swaps proxies to hedge Fed
+decision exposure, - equity index futures/options as event-risk gauges for CPI/jobs.
+For a small retail system, the extension is mostly useful for anchoring probabilities (model inputs), not for
+full delta-hedged arbitrage, unless you have sufficient capital and permissions.
+Key Sources
+CFTC designates Kalshi as a DCM (press release):
+https://www.cftc.gov/PressRoom/PressReleases/8302-20
+CME FedWatch methodology (step-by-step formulas):
+https://www.cmegroup.com/articles/2023/understanding-the-cme-group-fedwatch-
+tool-methodology.html
+CME FedWatch tool user guide (downloads note, usage overview):
+https://www.cmegroup.com/tools-information/quikstrike/cme-fedwatch-tool-user-
+guide.html
+Kalshi fee schedule (parabolic fee formula):
+https://kalshi.com/docs/kalshi-fee-schedule.pdf
+Kalshi orderbook reciprocity (bids-only, implied asks):
+https://docs.kalshi.com/getting_started/orderbook_responses
+Kalshi order API (IOC/FOK/GTC, buy_max_cost, post_only):
+https://docs.kalshi.com/api-reference/orders/create-order
+Kalshi fixed-point migration (subpenny pricing + fractional contracts):
+https://docs.kalshi.com/getting_started/fixed_point_migration
+• 
+• 
+• 
+32
+15
+
+Polymarket trading architecture + orderbook/websocket docs (comparative):
+https://docs.polymarket.com/trading/overview
+https://docs.polymarket.com/trading/orderbook
+https://docs.polymarket.com/market-data/websocket/overview
+CFTC Polymarket enforcement action (U.S. access context):
+https://www.cftc.gov/PressRoom/PressReleases/8478-22
+PredictIt CFTC no-action amendment letter (limits/scope changes):
+https://www.cftc.gov/csl/25-20/download
+OIS explanation in central bank research (expectations + contract structure):
+https://www.bankofengland.co.uk/-/media/boe/files/working-paper/2018/estimating-
+nominal-interest-rate-expectations-overnight-indexed-swaps-and-the-term-
+structure.pdf
+Options-implied distribution estimation references:
+https://www.imf.org/external/pubs/ft/wp/2010/wp10181.pdf
+https://www.bis.org/publ/bisp06b.pdf
+Fee Schedule for Feb 2026
+https://kalshi.com/docs/kalshi-fee-schedule.pdf?utm_source=chatgpt.com
+Interest Rate Modelling and Derivative Pricing
+https://www.applied-financial-mathematics.de/sites/default/files/Teaching/InterestRateMdellingWS19/
+IRModellingLecture_Part_02.pdf?utm_source=chatgpt.com
+CFTC Designates KalshiEX LLC as a Contract Market | CFTC
+https://www.cftc.gov/PressRoom/PressReleases/8302-20
+Understanding the CME Group FedWatch Tool Methodology - CME Group
+https://www.cmegroup.com/articles/2023/understanding-the-cme-group-fedwatch-tool-methodology.html
+Bank of England Staff Working Paper No. 763
+https://www.bankofengland.co.uk/-/media/boe/files/working-paper/2018/estimating-nominal-interest-rate-expectations-
+overnight-indexed-swaps-and-the-term-structure.pdf
+Create Order - API Documentation
+https://docs.kalshi.com/api-reference/orders/create-order
+Orderbook Responses
+https://docs.kalshi.com/getting_started/orderbook_responses?utm_source=chatgpt.com
+Overview - Polymarket Documentation
+https://docs.polymarket.com/trading/overview
+CFTC Letter No. 25-20
+https://www.cftc.gov/csl/25-20/download
+Option-implied Probability Distributions and Currency ...
+https://www.newyorkfed.org/medialibrary/media/research/staff_reports/sr32.pdf?utm_source=chatgpt.com
+1 6 19 23 28 35
+2 15
+3
+4 11 12 13 14 31 32
+5 17
+7 21 22 29
+8
+9 25
+10 16
+18
+16
+
+Mechanisms, Efficiency and Probabilistic Accuracy of ...
+https://aaltodoc.aalto.fi/bitstreams/8635ff61-baa3-4028-8c1f-d7d4c090a733/download?utm_source=chatgpt.com
+Fixed-Point Migration - API Documentation
+https://docs.kalshi.com/getting_started/fixed_point_migration
+CFTC Orders Event-Based Binary Options Markets ...
+https://www.cftc.gov/PressRoom/PressReleases/8478-22?utm_source=chatgpt.com
+Support
+https://www.predictit.org/support/faq?query=fees&utm_source=chatgpt.com
+How to translate Kalshi market prices into real-world odds ...
+https://news.kalshi.com/p/how-to-read-probabilities?utm_source=chatgpt.com
+Introduction - API Documentation - Kalshi
+https://docs.kalshi.com/welcome?utm_source=chatgpt.com
+20 33
+24 30
+26 37
+27
+34
+36
+17

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.strategy_doctrine import doctrine_summary
 
 
 STATUS_SCHEMA_VERSION = "runtime-status-v1"
@@ -67,11 +68,38 @@ def run_startup_checks(settings: Settings, runtime_name: str) -> StartupCheckRes
         warnings.append("disk_headroom_unavailable")
         disk_details["error"] = str(exc)
 
+    doctrine = doctrine_summary()
     details = {
+        "doctrine": {
+            "master_thesis": doctrine["master_thesis"],
+            "operating_hierarchy": doctrine["operating_hierarchy"],
+            "gated_modules": doctrine["gated_modules"],
+            "benchmark_question": "What can this machine do that a simple SPY/QQQ allocator cannot?",
+        },
         "writable_directories": dir_status,
         "disk": disk_details,
         "heartbeat_path": str(settings.heartbeat_path),
         "runtime_status_path": str(settings.runtime_status_path),
+        "kalshi": {
+            "api_url": settings.kalshi_api_url,
+            "mode": settings.kalshi_mode,
+            "data_mode": settings.kalshi_data_mode,
+            "auth_configured": bool(settings.kalshi_api_key_id and settings.kalshi_private_key_path),
+            "private_key_path": settings.kalshi_private_key_path,
+            "private_key_exists": bool(settings.kalshi_private_key_path and Path(settings.kalshi_private_key_path).exists()),
+            "request_timeout_seconds": settings.kalshi_request_timeout_seconds,
+            "request_retries": settings.kalshi_request_retries,
+            "connectivity_report_path": str(settings.kalshi_connectivity_report_path),
+        },
+        "trend": {
+            "data_mode": settings.trend_data_mode,
+            "weight_mode": settings.trend_weight_mode,
+            "symbols": settings.trend_symbols,
+            "fetch_timeout_seconds": settings.trend_fetch_timeout_seconds,
+            "fetch_retries": settings.trend_fetch_retries,
+            "first_measurement_report_path": str(settings.first_measurement_report_path),
+            "strategy_transparency_pack_path": str(settings.strategy_transparency_pack_path),
+        },
     }
     return StartupCheckResult(
         runtime_name=runtime_name,

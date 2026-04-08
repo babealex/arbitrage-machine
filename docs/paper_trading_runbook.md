@@ -2,6 +2,8 @@
 
 This repo is approved for paper research and limited paper trading only under the hardened baseline.
 
+Paper validation is not execution proof. Cleaner numerics do not remove the main remaining risks: stale books, disconnects, legging, fee underestimation, partial-fill path dependence, and exchange-side state drift.
+
 ## Scope
 
 - Event-driven paper execution uses the conservative fill model:
@@ -44,6 +46,10 @@ Do not run paper trading if any of the following are true:
 - reconciliation failures
 - abnormal quote completeness
 - market closed for the target asset session
+- edge does not exceed estimated fees plus execution buffer by a wide margin
+- the target market is too close to expiry for orderly entry and exit
+- orderbook depth is inadequate for the intended size
+- disconnects or sequence gaps leave book state uncertain
 - research replay relying on coarse bars for short horizons
 
 ## Operator Procedure
@@ -56,6 +62,16 @@ Do not run paper trading if any of the following are true:
    - rejected and unfilled decisions appear when expected
 3. Check append-only audit rows before trusting any PnL number.
 4. For replay conclusions, treat coarse-bar or downgraded-provider rows as lower quality.
+
+## Numeric Guardrails
+
+Production trade gating should be read as:
+
+- `edge_after_costs = edge_before_fees - estimated_fee_drag - execution_buffer`
+- only trade when `edge_after_costs` exceeds the configured threshold
+- reject if stale data, insufficient depth, expiry proximity, or state uncertainty weakens the quote context
+
+Paper and replay analytics still use simplified internal representations in some paths. Do not treat report smoothness or summary ratios as evidence that exchange-facing fixed-point handling is complete.
 
 ## Required Artifacts Per Run
 

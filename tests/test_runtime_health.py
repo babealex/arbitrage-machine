@@ -81,3 +81,26 @@ def test_assert_runtime_headroom_returns_details(monkeypatch, tmp_path) -> None:
 
     assert details["free_bytes"] == 4096
     assert details["total_bytes"] == 8192
+
+
+def test_startup_checks_include_kalshi_and_trend_runtime_details(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "data" / "trading.db"))
+    monkeypatch.setenv("LOG_PATH", str(tmp_path / "logs" / "app.log"))
+    monkeypatch.setenv("HEARTBEAT_PATH", str(tmp_path / "data" / "heartbeat.txt"))
+    monkeypatch.setenv("RUNTIME_STATUS_PATH", str(tmp_path / "data" / "runtime_status.json"))
+    monkeypatch.setenv("REPORT_PATH", str(tmp_path / "data" / "report.json"))
+    monkeypatch.setenv("FIRST_MEASUREMENT_REPORT_PATH", str(tmp_path / "data" / "first_measurement.json"))
+    monkeypatch.setenv("KALSHI_CONNECTIVITY_REPORT_PATH", str(tmp_path / "data" / "kalshi_connectivity.json"))
+    monkeypatch.setenv("KALSHI_PRIVATE_KEY_PATH", str(tmp_path / "missing_key.pem"))
+    settings = Settings()
+    result = run_startup_checks(settings, "two_sleeve_paper")
+
+    assert "kalshi_private_key_path_not_found" in result.warnings
+    assert result.details["kalshi"]["connectivity_report_path"].endswith("kalshi_connectivity.json")
+    assert result.details["kalshi"]["private_key_exists"] is False
+    assert result.details["trend"]["first_measurement_report_path"].endswith("first_measurement.json")
+    assert result.details["trend"]["strategy_transparency_pack_path"].endswith("strategy_transparency_pack.json")
+    assert result.details["trend"]["weight_mode"] == "gentle_score"
+    assert result.details["trend"]["symbols"] == ["SPY", "QQQ", "IWM", "EFA", "EEM", "TLT", "IEF", "TIP", "LQD", "HYG", "GLD", "DBC"]
+    assert result.details["doctrine"]["operating_hierarchy"] == ["trend", "kalshi_event"]
+    assert "SPY/QQQ allocator" in result.details["doctrine"]["benchmark_question"]

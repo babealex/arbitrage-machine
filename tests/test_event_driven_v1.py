@@ -9,11 +9,16 @@ from app.db import Database
 from app.events.models import NewsItem, TradeIdea
 from app.execution.broker import PaperBroker
 from app.execution.event_engine import EventExecutionEngine
+from app.execution.router import ExecutionRouter
 from app.mapping.engine import EventTradeMapper
 from app.persistence.contracts import EventEntryQueueRecord, TradeCandidateRecord
 from app.persistence.event_repo import EventRepository
+from app.persistence.kalshi_repo import KalshiRepository
+from app.persistence.market_state_repo import MarketStateRepository
 from app.persistence.reporting_repo import ReportingRepository
 from app.reporting import PaperTradingReporter, build_event_run_manifest
+from app.portfolio.state import PortfolioState
+from app.risk.manager import RiskManager
 
 
 IN_SESSION_TS = datetime(2026, 3, 20, 18, 0, 0, tzinfo=timezone.utc)
@@ -47,6 +52,39 @@ class StubBroker:
 
     def planned_exit_at(self, max_hold_seconds: int):
         return datetime.now(timezone.utc) + timedelta(seconds=max_hold_seconds)
+
+    def snapshot_order_book(self, symbol: str, signal_ts=None):
+        from app.execution.broker import PaperOrderBook, PaperBookLevel
+
+        ts = signal_ts or datetime.now(timezone.utc)
+        return PaperOrderBook(
+            symbol=symbol,
+            mid_price=100.0,
+            bid_price=100.0,
+            ask_price=100.0,
+            bid_levels=[PaperBookLevel(price=100.0, size=100)],
+            ask_levels=[PaperBookLevel(price=100.0, size=100)],
+            ts=ts,
+            source="stub_book",
+        )
+
+
+def _event_engine(db: Database, repo: EventRepository, broker) -> EventExecutionEngine:
+    signal_repo = KalshiRepository(db)
+    return EventExecutionEngine(
+        repo,
+        signal_repo,
+        broker,
+        ExecutionRouter(
+            None,
+            signal_repo,
+            PortfolioState(None),
+            RiskManager(1.0, 10.0, 10.0, 10),
+            __import__("logging").getLogger("event-test"),
+            False,
+            market_state_repo=MarketStateRepository(db),
+        ),
+    )
 
 
 def test_rule_classifier_detects_inflation_hot() -> None:
@@ -84,7 +122,7 @@ def test_event_execution_and_reporting(tmp_path: Path) -> None:
     event_repo = EventRepository(db)
     reporting_repo = ReportingRepository(db)
     broker = StubBroker()
-    engine = EventExecutionEngine(event_repo, broker)
+    engine = _event_engine(db, event_repo, broker)
     base_ts = datetime(2026, 3, 20, 18, 0, 0, tzinfo=timezone.utc)
     candidate_id = event_repo.persist_trade_candidate(
         TradeCandidateRecord(
@@ -121,6 +159,7 @@ def test_event_execution_and_reporting(tmp_path: Path) -> None:
     report = PaperTradingReporter(reporting_repo, tmp_path / "report.json").write({"event_driven_loop_stats": {"news_items_seen": 1}})
     assert report["event_driven_summary"]["closed_positions"] == 2
     assert report["event_driven_summary"]["trade_candidates"] == 1
+    assert report["execution_report"]["by_strategy"]["event_driven"]["orders"] >= 4
 
 
 def test_paper_broker_buy_fills_at_ask_not_mid() -> None:
@@ -230,7 +269,7 @@ def test_passive_paper_order_does_not_fill_without_later_cross() -> None:
     assert any(event.get("reason") == "passive_not_crossed" for event in result.audit_events)
 
 
-def test_event_engine_persists_append_only_paper_execution_audit_for_partial_fill(tmp_path: Path) -> None:
+def test_event_engine_routes_execution_through_shared_outcomes_for_partial_fill(tmp_path: Path) -> None:
     db = Database(tmp_path / "audit.db")
     event_repo = EventRepository(db)
     reporting_repo = ReportingRepository(db)
@@ -243,7 +282,7 @@ def test_event_engine_persists_append_only_paper_execution_audit_for_partial_fil
         depth_levels=1,
         price_fetcher=lambda symbol: 100.0,
     )
-    engine = EventExecutionEngine(event_repo, broker)
+    engine = _event_engine(db, event_repo, broker)
     base_ts = datetime(2026, 3, 20, 18, 0, 0, tzinfo=timezone.utc)
     candidate_id = event_repo.persist_trade_candidate(
         TradeCandidateRecord(
@@ -279,15 +318,12 @@ def test_event_engine_persists_append_only_paper_execution_audit_for_partial_fil
     assert queue_rows[0]["status"] == "partially_filled"
     positions = event_bundle.positions
     assert positions[0]["quantity"] == 2
-    audit_rows = event_bundle.paper_execution_audit
-    assert len(audit_rows) >= 3
-    decision_states = {row["decision_state"] for row in audit_rows}
-    assert "submitted" in decision_states
-    assert "fill_level" in decision_states
-    assert "partial_fill" in decision_states
+    signal_repo = KalshiRepository(db)
+    assert any(outcome.filled_quantity == 2 for outcome in signal_repo.load_execution_outcomes())
+    assert MarketStateRepository(db).load_market_state_inputs()
 
 
-def test_event_driven_report_includes_execution_manifest_and_audit_summary(tmp_path: Path) -> None:
+def test_event_driven_report_includes_execution_manifest_and_shared_execution_summary(tmp_path: Path) -> None:
     db = Database(tmp_path / "manifest.db")
     event_repo = EventRepository(db)
     reporting_repo = ReportingRepository(db)
@@ -301,7 +337,7 @@ def test_event_driven_report_includes_execution_manifest_and_audit_summary(tmp_p
         passive_recheck_seconds=1.0,
         price_fetcher=lambda symbol: 100.0,
     )
-    engine = EventExecutionEngine(event_repo, broker)
+    engine = _event_engine(db, event_repo, broker)
     base_ts = datetime(2026, 3, 20, 18, 0, 0, tzinfo=timezone.utc)
     candidate_id = event_repo.persist_trade_candidate(
         TradeCandidateRecord(
@@ -367,9 +403,8 @@ def test_event_driven_report_includes_execution_manifest_and_audit_summary(tmp_p
     ).write({"event_driven_loop_stats": {"news_items_seen": 1}})
     assert report["run_manifest"]["manifest_schema_version"] == "paper-event-run-manifest-v1"
     assert report["run_manifest"]["execution_model"]["submission_latency_seconds"] == 3.0
-    assert report["event_driven_summary"]["paper_execution_audit_rows"] >= 5
-    assert report["event_driven_summary"]["paper_execution_decision_breakdown"]["partial_fill"] >= 1
-    assert report["event_driven_summary"]["paper_execution_decision_breakdown"]["unfilled"] >= 1
+    assert report["execution_report"]["by_strategy"]["event_driven"]["orders"] >= 2
+    assert report["event_driven_summary"]["legacy_paper_execution_audit_rows"] == 0
 
 
 class _NoopLogger:

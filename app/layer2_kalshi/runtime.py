@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 
+from app.allocation.adapters import candidate_from_kalshi_signal
+from app.allocation.coordinator import AllocationCoordinator, PendingAllocationAction
+from app.allocation.engine import AllocationEngine
+from app.allocation.feedback import AllocationFeedbackEngine
+from app.allocation.models import PortfolioRiskState
 from app.alerts.notifier import Notifier
 from app.common.runtime_health import assert_runtime_headroom, run_startup_checks, write_runtime_status
 from app.config import Settings
@@ -13,6 +19,7 @@ from app.external_data.probability_mapper import map_market_probability
 from app.kalshi.rest_client import KalshiRestClient
 from app.logging_setup import setup_logging
 from app.market_data.macro_fetcher import fetch_macro_prices
+from app.market_data.snapshots import market_state_inputs_from_kalshi_market
 from app.market_data.service import MarketDataService
 from app.models import StrategyName
 from app.monotonicity_observation import (
@@ -24,10 +31,15 @@ from app.monotonicity_observation import (
 )
 from app.portfolio.state import PortfolioState
 from app.persistence.kalshi_repo import KalshiRepository
+from app.persistence.allocation_repo import AllocationRepository
+from app.persistence.market_state_repo import MarketStateRepository
+from app.persistence.options_repo import OptionsRepository
 from app.persistence.contracts import CrossMarketSnapshotRecord, MonotonicityObservationRecord
 from app.persistence.reporting_repo import ReportingRepository
+from app.persistence.risk_repo import RiskRepository
 from app.reporting import PaperTradingReporter
 from app.risk.manager import RiskManager
+from app.runtime.health import assess_layer2_trading_readiness
 from app.strategies.cross_market import CrossMarketStrategy
 from app.strategies.cross_market_snapshot import CrossMarketSnapshotEngine
 from app.strategies.monotonicity import MonotonicityStrategy
@@ -35,6 +47,11 @@ from app.strategies.partition import PartitionStrategy
 
 
 def run_layer2_kalshi(settings: Settings) -> None:
+    if settings.enable_portfolio_orchestrator:
+        from app.portfolio.runtime import run_portfolio_orchestrator
+
+        run_portfolio_orchestrator(settings)
+        return
     logger = setup_logging(settings)
     startup_check = run_startup_checks(settings, "layer2_kalshi")
     for warning in startup_check.warnings:
@@ -58,7 +75,11 @@ def run_layer2_kalshi(settings: Settings) -> None:
     )
     db = Database(settings.db_path)
     repo = KalshiRepository(db)
+    allocation_repo = AllocationRepository(db)
     reporting_repo = ReportingRepository(db)
+    risk_repo = RiskRepository(db)
+    market_state_repo = MarketStateRepository(db)
+    options_repo = OptionsRepository(db)
     notifier = Notifier(settings)
     client = KalshiRestClient(settings)
     market_data = MarketDataService(client, settings)
@@ -69,8 +90,16 @@ def run_layer2_kalshi(settings: Settings) -> None:
         max_position_per_trade_pct=settings.max_position_per_trade_pct,
         max_failed_trades_per_day=settings.max_failed_trades_per_day,
         logger=logger,
+        event_recorder=risk_repo.persist_transition,
     )
-    router = ExecutionRouter(client, repo, portfolio, risk, logger, settings.live_trading)
+    router = ExecutionRouter(client, repo, portfolio, risk, logger, settings.live_trading, market_state_repo=market_state_repo)
+    allocation_coordinator = AllocationCoordinator(AllocationEngine(), allocation_repo)
+    allocation_feedback = AllocationFeedbackEngine(
+        allocation_repo=allocation_repo,
+        kalshi_repo=repo,
+        market_state_repo=market_state_repo,
+        options_repo=options_repo,
+    )
     monotonicity = MonotonicityStrategy(
         settings.min_edge_bps,
         settings.slippage_buffer_bps,
@@ -122,13 +151,13 @@ def run_layer2_kalshi(settings: Settings) -> None:
             disk_headroom = assert_runtime_headroom(settings)
             reconciliation = portfolio.reconcile(repo)
             repo.persist_snapshot(portfolio.snapshot)
-            if not reconciliation.success and settings.live_trading:
-                risk.kill("reconciliation_failed", {"mismatches": reconciliation.mismatches})
-            if reconciliation.mismatches and settings.live_trading:
-                risk.kill("reconciliation_mismatch", {"mismatches": reconciliation.mismatches})
             raw_markets = market_data.refresh_markets()
             filter_result = market_data.filter_markets(raw_markets)
             markets = market_data.hydrate_structural_quotes(filter_result.included)
+            for market in markets:
+                market_state_repo.persist_many(
+                    market_state_inputs_from_kalshi_market(market, market_data.last_update)
+                )
             market_lookup = {market.ticker: market for market in filter_result.included}
             update_monotonicity_observations(
                 pending_monotonicity_observations,
@@ -140,7 +169,6 @@ def run_layer2_kalshi(settings: Settings) -> None:
                 logger,
             )
             ladders = market_data.build_ladders(markets)
-            stale_market_data = (time.time() - market_data.last_update.timestamp()) > settings.max_market_data_staleness_seconds
             if settings.app_mode == "safe":
                 external = ExternalDataResult(
                     distributions={},
@@ -155,6 +183,16 @@ def run_layer2_kalshi(settings: Settings) -> None:
             exclusion_counts: dict[str, int] = {}
             for _, reason, _, _ in filter_result.excluded:
                 exclusion_counts[reason] = exclusion_counts.get(reason, 0) + 1
+            readiness = assess_layer2_trading_readiness(
+                market_data_last_update=market_data.last_update,
+                max_market_data_staleness_seconds=settings.max_market_data_staleness_seconds,
+                external_stale=external.stale,
+                external_errors=external.errors,
+                app_mode=settings.app_mode,
+                reconciliation_success=reconciliation.success,
+                reconciliation_mismatches=reconciliation.mismatches,
+                now=datetime.now(timezone.utc),
+            )
             logger.info(
                 "cycle_status",
                 extra={
@@ -176,15 +214,13 @@ def run_layer2_kalshi(settings: Settings) -> None:
                         "external_data_source": external.source,
                         "quote_completeness_stats": market_data.last_quote_stats.quote_completeness_stats,
                         "kalshi_mode": settings.kalshi_mode,
+                        "trading_readiness": readiness.can_trade,
+                        "trading_halt_reasons": readiness.halt_reasons,
                     }
                 },
             )
             for diagnostic in filter_result.diagnostics[: settings.diagnostic_market_sample_size]:
                 logger.info("market_filter_diagnostic", extra={"event": diagnostic})
-            if stale_market_data:
-                risk.kill("stale_market_data", {"last_update": market_data.last_update.isoformat()})
-            if external.stale and settings.app_mode in {"balanced", "aggressive"}:
-                risk.kill("external_data_invalid", {"errors": external.errors})
             loop_stats = {
                 "discovery_mode_used": market_data.last_discovery_stats.discovery_mode_used,
                 "macro_candidate_series": market_data.last_discovery_stats.candidate_series_found,
@@ -212,7 +248,12 @@ def run_layer2_kalshi(settings: Settings) -> None:
                 "cross_market_snapshots_collected": 0,
                 "cross_market_avg_disagreement_score": 0.0,
                 "cross_market_highest_disagreement_events": [],
+                "trading_readiness": readiness.can_trade,
+                "trading_halt_reasons": readiness.halt_reasons,
             }
+            if settings.live_trading:
+                for reason in readiness.halt_reasons:
+                    risk.kill(reason, readiness.details)
             if settings.enable_cross_market_mode and (time.time() - last_cross_market_capture_at) >= settings.cross_market_poll_interval_seconds:
                 try:
                     macro_prices = fetch_macro_prices()
@@ -256,6 +297,7 @@ def run_layer2_kalshi(settings: Settings) -> None:
             if risk.state.killed:
                 notifier.send("Arbitrage Machine halted", ",".join(risk.state.reasons or ["unknown"]))
             else:
+                pending_allocations: list[PendingAllocationAction] = []
                 for ladder in ladders.values():
                     loop_stats["ladders_evaluated"] += 1
                     signals, evaluations = monotonicity.evaluate(ladder, portfolio.snapshot.equity)
@@ -319,7 +361,26 @@ def run_layer2_kalshi(settings: Settings) -> None:
                                 "metadata": observation.metadata_json,
                             }})
                         if not settings.timing_experiment_mode:
-                            router.execute_signal(signal)
+                            candidate = candidate_from_kalshi_signal(
+                                signal,
+                                cvar_95_loss=Decimal(max(50, signal.quantity * 10)),
+                                uncertainty_penalty=Decimal("0.25"),
+                                liquidity_penalty=Decimal("0.05"),
+                                horizon_days=14,
+                                correlation_bucket=signal.ticker,
+                            )
+                            pending_allocations.append(
+                                PendingAllocationAction(
+                                    candidate=candidate,
+                                    execute=lambda decision, signal=signal: router.execute_signal(
+                                        signal,
+                                        extra_source_metadata={
+                                            "allocation_run_id": decision.run_id,
+                                            "allocation_candidate_id": decision.candidate_id,
+                                        },
+                                    ),
+                                )
+                            )
                 by_event_all: dict[str, list] = {}
                 for market in filter_result.included:
                     by_event_all.setdefault(market.event_ticker, []).append(market)
@@ -348,7 +409,26 @@ def run_layer2_kalshi(settings: Settings) -> None:
                         for signal in signals:
                             logger.info("signal_accepted", extra={"event": {"strategy": signal.strategy.value, "ticker": signal.ticker, "edge_after_fees": signal.probability_edge}})
                             if not settings.timing_experiment_mode:
-                                router.execute_signal(signal)
+                                candidate = candidate_from_kalshi_signal(
+                                    signal,
+                                    cvar_95_loss=Decimal(max(50, signal.quantity * 10)),
+                                    uncertainty_penalty=Decimal("0.20"),
+                                    liquidity_penalty=Decimal("0.04"),
+                                    horizon_days=7,
+                                    correlation_bucket=signal.ticker,
+                                )
+                                pending_allocations.append(
+                                    PendingAllocationAction(
+                                        candidate=candidate,
+                                        execute=lambda decision, signal=signal: router.execute_signal(
+                                            signal,
+                                            extra_source_metadata={
+                                                "allocation_run_id": decision.run_id,
+                                                "allocation_candidate_id": decision.candidate_id,
+                                            },
+                                        ),
+                                    )
+                                )
                 if settings.app_mode in {"balanced", "aggressive"} and not external.stale:
                     for market in markets:
                         mapped_probability, mapping_metadata = map_market_probability(market, external.distributions)
@@ -365,7 +445,41 @@ def run_layer2_kalshi(settings: Settings) -> None:
                         for signal in signals:
                             logger.info("signal_accepted", extra={"event": {"strategy": signal.strategy.value, "ticker": signal.ticker, "edge_after_fees": signal.probability_edge}})
                             if not settings.timing_experiment_mode:
-                                router.execute_signal(signal)
+                                candidate = candidate_from_kalshi_signal(
+                                    signal,
+                                    cvar_95_loss=Decimal(max(40, signal.quantity * 8)),
+                                    uncertainty_penalty=Decimal("0.35"),
+                                    liquidity_penalty=Decimal("0.06"),
+                                    horizon_days=21,
+                                    correlation_bucket=market.event_ticker,
+                                )
+                                pending_allocations.append(
+                                    PendingAllocationAction(
+                                        candidate=candidate,
+                                        execute=lambda decision, signal=signal: router.execute_signal(
+                                            signal,
+                                            extra_source_metadata={
+                                                "allocation_run_id": decision.run_id,
+                                                "allocation_candidate_id": decision.candidate_id,
+                                            },
+                                        ),
+                                    )
+                                )
+                if pending_allocations:
+                    allocation_coordinator.run(
+                        pending=pending_allocations,
+                        risk_state=PortfolioRiskState(
+                            observed_at=datetime.now(timezone.utc),
+                            portfolio_equity=Decimal(str(portfolio.snapshot.equity)),
+                            daily_realized_pnl=Decimal(str(portfolio.snapshot.daily_pnl)),
+                            current_gross_notional=Decimal(str(sum(position.exposure * 100 for position in portfolio.snapshot.positions.values()))),
+                            gross_notional_cap=Decimal(str(portfolio.snapshot.equity)) * Decimal(str(settings.max_total_exposure_pct)),
+                            allocated_notional_by_sleeve={},
+                            allocated_notional_by_bucket={},
+                        ),
+                        adjustments=allocation_repo.load_latest_adjustments(),
+                    )
+                    allocation_feedback.refresh_latest_run()
             reporter.write(loop_stats)
             write_runtime_status(
                 settings,

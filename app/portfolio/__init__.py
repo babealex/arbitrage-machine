@@ -1,1 +1,1 @@
-"""Portfolio state."""
+"""Portfolio package."""

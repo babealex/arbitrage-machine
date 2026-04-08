@@ -5,6 +5,8 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_TREND_SYMBOLS = "SPY,QQQ,IWM,EFA,EEM,TLT,IEF,TIP,LQD,HYG,GLD,DBC"
+
 
 def load_dotenv(path: str = ".env") -> None:
     env_path = Path(path)
@@ -35,6 +37,11 @@ def _get_int(name: str, default: int) -> int:
     return int(value) if value is not None else default
 
 
+def _get_csv(name: str, default: str) -> list[str]:
+    value = os.getenv(name, default)
+    return [item.strip().lower() for item in value.split(",") if item.strip()]
+
+
 @dataclass(slots=True)
 class Settings:
     app_env: str = field(default_factory=lambda: os.getenv("APP_ENV", "dev"))
@@ -46,7 +53,16 @@ class Settings:
     heartbeat_path: Path = field(default_factory=lambda: Path(os.getenv("HEARTBEAT_PATH", "./data/heartbeat.txt")))
     runtime_status_path: Path = field(default_factory=lambda: Path(os.getenv("RUNTIME_STATUS_PATH", "./data/runtime_status.json")))
     report_path: Path = field(default_factory=lambda: Path(os.getenv("REPORT_PATH", "./data/paper_report.json")))
+    first_measurement_report_path: Path = field(default_factory=lambda: Path(os.getenv("FIRST_MEASUREMENT_REPORT_PATH", "./data/first_measurement_report.json")))
+    multi_cycle_research_report_path: Path = field(default_factory=lambda: Path(os.getenv("MULTI_CYCLE_RESEARCH_REPORT_PATH", "./data/multi_cycle_research_report.json")))
+    trend_replay_diversity_report_path: Path = field(default_factory=lambda: Path(os.getenv("TREND_REPLAY_DIVERSITY_REPORT_PATH", "./data/trend_replay_diversity_report.json")))
+    trend_threshold_sensitivity_report_path: Path = field(default_factory=lambda: Path(os.getenv("TREND_THRESHOLD_SENSITIVITY_REPORT_PATH", "./data/trend_threshold_sensitivity_report.json")))
+    strategy_transparency_pack_path: Path = field(default_factory=lambda: Path(os.getenv("STRATEGY_TRANSPARENCY_PACK_PATH", "./data/strategy_transparency_pack.json")))
+    dashboard_state_path: Path = field(default_factory=lambda: Path(os.getenv("DASHBOARD_STATE_PATH", "./data/control_panel_state.json")))
+    kalshi_connectivity_report_path: Path = field(default_factory=lambda: Path(os.getenv("KALSHI_CONNECTIVITY_REPORT_PATH", "./data/kalshi_connectivity_report.json")))
     external_cache_path: Path = field(default_factory=lambda: Path(os.getenv("EXTERNAL_CACHE_PATH", "./data/external_fed_cache.json")))
+    control_panel_host: str = field(default_factory=lambda: os.getenv("CONTROL_PANEL_HOST", "127.0.0.1"))
+    control_panel_port: int = field(default_factory=lambda: _get_int("CONTROL_PANEL_PORT", 8765))
     minimum_free_disk_bytes: int = field(default_factory=lambda: _get_int("MINIMUM_FREE_DISK_BYTES", 268435456))
     enforce_disk_headroom: bool = field(default_factory=lambda: _get_bool("ENFORCE_DISK_HEADROOM", True))
     kalshi_api_url: str = field(default_factory=lambda: os.getenv("KALSHI_API_URL", "https://api.elections.kalshi.com/trade-api/v2"))
@@ -64,6 +80,39 @@ class Settings:
     smtp_username: str = field(default_factory=lambda: os.getenv("SMTP_USERNAME", ""))
     smtp_password: str = field(default_factory=lambda: os.getenv("SMTP_PASSWORD", ""))
     poll_interval_seconds: int = field(default_factory=lambda: _get_int("POLL_INTERVAL_SECONDS", 5))
+    portfolio_cycle_interval_seconds: int = field(default_factory=lambda: _get_int("PORTFOLIO_CYCLE_INTERVAL_SECONDS", 60))
+    enable_two_sleeve_runtime: bool = field(default_factory=lambda: _get_bool("ENABLE_TWO_SLEEVE_RUNTIME", True))
+    enable_portfolio_orchestrator: bool = field(default_factory=lambda: _get_bool("ENABLE_PORTFOLIO_ORCHESTRATOR", False))
+    enable_trend_sleeve: bool = field(default_factory=lambda: _get_bool("ENABLE_TREND_SLEEVE", True))
+    enable_kalshi_sleeve: bool = field(default_factory=lambda: _get_bool("ENABLE_KALSHI_SLEEVE", True))
+    enable_options_sleeve: bool = field(default_factory=lambda: _get_bool("ENABLE_OPTIONS_SLEEVE", False))
+    enable_convexity_sleeve: bool = field(default_factory=lambda: _get_bool("ENABLE_CONVEXITY_SLEEVE", False))
+    total_paper_capital: float = field(default_factory=lambda: _get_float("TOTAL_PAPER_CAPITAL", 100000.0))
+    trend_capital_weight_default: float = field(default_factory=lambda: _get_float("TREND_CAPITAL_WEIGHT_DEFAULT", 0.75))
+    kalshi_capital_weight_default: float = field(default_factory=lambda: _get_float("KALSHI_CAPITAL_WEIGHT_DEFAULT", 0.25))
+    trend_data_mode: str = field(default_factory=lambda: os.getenv("TREND_DATA_MODE", "auto").strip().lower())
+    trend_replay_advance_mode: str = field(default_factory=lambda: os.getenv("TREND_REPLAY_ADVANCE_MODE", "static").strip().lower())
+    trend_bootstrap_variant: str = field(default_factory=lambda: os.getenv("TREND_BOOTSTRAP_VARIANT", "smooth").strip().lower())
+    trend_weight_mode: str = field(default_factory=lambda: os.getenv("TREND_WEIGHT_MODE", "gentle_score").strip().lower())
+    trend_min_rebalance_fraction: float = field(default_factory=lambda: _get_float("TREND_MIN_REBALANCE_FRACTION", 0.10))
+    kalshi_data_mode: str = field(default_factory=lambda: os.getenv("KALSHI_DATA_MODE", "auto").strip().lower())
+    trend_symbols_raw: str = field(default_factory=lambda: os.getenv("TREND_SYMBOLS", DEFAULT_TREND_SYMBOLS))
+    trend_fetch_retries: int = field(default_factory=lambda: _get_int("TREND_FETCH_RETRIES", 2))
+    trend_fetch_backoff_seconds: float = field(default_factory=lambda: _get_float("TREND_FETCH_BACKOFF_SECONDS", 1.0))
+    trend_fetch_timeout_seconds: int = field(default_factory=lambda: _get_int("TREND_FETCH_TIMEOUT_SECONDS", 10))
+    kalshi_request_timeout_seconds: int = field(default_factory=lambda: _get_int("KALSHI_REQUEST_TIMEOUT_SECONDS", 15))
+    kalshi_request_retries: int = field(default_factory=lambda: _get_int("KALSHI_REQUEST_RETRIES", 2))
+    kalshi_request_backoff_seconds: float = field(default_factory=lambda: _get_float("KALSHI_REQUEST_BACKOFF_SECONDS", 1.0))
+    live_enabled_sleeves_raw: list[str] = field(default_factory=lambda: _get_csv("LIVE_ENABLED_SLEEVES", "kalshi"))
+    trend_live_broker_mode: str = field(default_factory=lambda: os.getenv("TREND_LIVE_BROKER_MODE", "none").strip().lower())
+    trend_live_broker_enabled: bool = field(default_factory=lambda: _get_bool("TREND_LIVE_BROKER_ENABLED", False))
+    ibkr_host: str = field(default_factory=lambda: os.getenv("IBKR_HOST", "127.0.0.1"))
+    ibkr_port: int = field(default_factory=lambda: _get_int("IBKR_PORT", 7497))
+    ibkr_client_id: int = field(default_factory=lambda: _get_int("IBKR_CLIENT_ID", 0))
+    ibkr_account_id: str = field(default_factory=lambda: os.getenv("IBKR_ACCOUNT_ID", ""))
+    max_capital_kalshi: float = field(default_factory=lambda: _get_float("MAX_CAPITAL_KALSHI", 0.30))
+    max_capital_trend: float = field(default_factory=lambda: _get_float("MAX_CAPITAL_TREND", 0.60))
+    max_capital_options: float = field(default_factory=lambda: _get_float("MAX_CAPITAL_OPTIONS", 0.10))
     timing_experiment_mode: bool = field(default_factory=lambda: _get_bool("TIMING_EXPERIMENT_MODE", False))
     timing_confirmation_delay_seconds: float = field(default_factory=lambda: _get_float("TIMING_CONFIRMATION_DELAY_SECONDS", 1.0))
     timing_followup_delay_seconds: float = field(default_factory=lambda: _get_float("TIMING_FOLLOWUP_DELAY_SECONDS", 1.0))
@@ -87,6 +136,24 @@ class Settings:
     belief_poll_interval_seconds: int = field(default_factory=lambda: _get_int("BELIEF_POLL_INTERVAL_SECONDS", 5))
     disagreement_threshold: float = field(default_factory=lambda: _get_float("DISAGREEMENT_THRESHOLD", 0.20))
     enable_external_proxy_fetch: bool = field(default_factory=lambda: _get_bool("ENABLE_EXTERNAL_PROXY_FETCH", True))
+    convexity_enabled: bool = field(default_factory=lambda: _get_bool("CONVEXITY_ENABLED", _get_bool("ENABLE_CONVEXITY_SLEEVE", False)))
+    convexity_max_risk_per_trade_pct: float = field(default_factory=lambda: _get_float("CONVEXITY_MAX_RISK_PER_TRADE_PCT", 0.02))
+    convexity_max_total_exposure_pct: float = field(default_factory=lambda: _get_float("CONVEXITY_MAX_TOTAL_EXPOSURE_PCT", 0.20))
+    convexity_min_reward_to_risk: float = field(default_factory=lambda: _get_float("CONVEXITY_MIN_REWARD_TO_RISK", 5.0))
+    convexity_min_expected_value_after_costs: float = field(default_factory=lambda: _get_float("CONVEXITY_MIN_EXPECTED_VALUE_AFTER_COSTS", 0.0))
+    convexity_min_oi: int = field(default_factory=lambda: _get_int("CONVEXITY_MIN_OI", 100))
+    convexity_min_volume: int = field(default_factory=lambda: _get_int("CONVEXITY_MIN_VOLUME", 10))
+    convexity_max_bid_ask_pct_of_debit: float = field(default_factory=lambda: _get_float("CONVEXITY_MAX_BID_ASK_PCT_OF_DEBIT", 0.25))
+    convexity_allowed_dte_min: int = field(default_factory=lambda: _get_int("CONVEXITY_ALLOWED_DTE_MIN", 7))
+    convexity_allowed_dte_max: int = field(default_factory=lambda: _get_int("CONVEXITY_ALLOWED_DTE_MAX", 30))
+    convexity_max_open_trades: int = field(default_factory=lambda: _get_int("CONVEXITY_MAX_OPEN_TRADES", 5))
+    convexity_persistence_enabled: bool = field(default_factory=lambda: _get_bool("CONVEXITY_PERSISTENCE_ENABLED", True))
+    convexity_reporting_enabled: bool = field(default_factory=lambda: _get_bool("CONVEXITY_REPORTING_ENABLED", True))
+    convexity_lookback_days_summary: int = field(default_factory=lambda: _get_int("CONVEXITY_LOOKBACK_DAYS_SUMMARY", 90))
+    convexity_live_execution_enabled: bool = field(default_factory=lambda: _get_bool("CONVEXITY_LIVE_EXECUTION_ENABLED", False))
+    convexity_paper_execution_enabled: bool = field(default_factory=lambda: _get_bool("CONVEXITY_PAPER_EXECUTION_ENABLED", True))
+    convexity_macro_events: str = field(default_factory=lambda: os.getenv("CONVEXITY_MACRO_EVENTS", ""))
+    convexity_earnings_events: str = field(default_factory=lambda: os.getenv("CONVEXITY_EARNINGS_EVENTS", ""))
     enable_partition_strategy: bool = field(default_factory=lambda: _get_bool("ENABLE_PARTITION_STRATEGY", True))
     partition_min_coverage: float = field(default_factory=lambda: _get_float("PARTITION_MIN_COVERAGE", 0.98))
     min_time_to_expiry_seconds: int = field(default_factory=lambda: _get_int("MIN_TIME_TO_EXPIRY_SECONDS", 1800))
@@ -134,16 +201,68 @@ class Settings:
         self.heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
         self.runtime_status_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.first_measurement_report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.strategy_transparency_pack_path.parent.mkdir(parents=True, exist_ok=True)
+        self.dashboard_state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.kalshi_connectivity_report_path.parent.mkdir(parents=True, exist_ok=True)
+        self.trend_threshold_sensitivity_report_path.parent.mkdir(parents=True, exist_ok=True)
         self.external_cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> list[str]:
         warnings: list[str] = []
+        known_live_sleeves = {"kalshi", "trend", "options"}
         if self.live_trading and (not self.kalshi_api_key_id or not self.kalshi_private_key_path):
             warnings.append("live_trading_requested_without_kalshi_auth")
+        if self.kalshi_api_key_id and not self.kalshi_private_key_path:
+            warnings.append("kalshi_private_key_path_missing")
+        if self.kalshi_private_key_path and not self.kalshi_api_key_id:
+            warnings.append("kalshi_api_key_id_missing")
+        if self.kalshi_private_key_path and not Path(self.kalshi_private_key_path).exists():
+            warnings.append("kalshi_private_key_path_not_found")
+        invalid_live_sleeves = [sleeve for sleeve in self.live_enabled_sleeves if sleeve not in known_live_sleeves]
+        if invalid_live_sleeves:
+            warnings.append(f"unknown_live_enabled_sleeves:{','.join(invalid_live_sleeves)}")
+        if self.trend_live_broker_mode not in {"none", "manual", "ibkr"}:
+            warnings.append(f"unknown_trend_live_broker_mode:{self.trend_live_broker_mode}")
+        if self.trend_live_broker_mode == "ibkr" and not self.trend_live_broker_enabled:
+            warnings.append("ibkr_mode_enabled_without_trend_live_broker_enabled")
+        if self.trend_live_broker_mode == "ibkr" and not self.ibkr_account_id:
+            warnings.append("ibkr_account_id_missing")
+        if self.live_trading and "trend" in self.live_enabled_sleeves and self.trend_live_broker_mode == "none":
+            warnings.append("trend_live_requested_without_supported_broker")
+        if self.live_trading and "options" in self.live_enabled_sleeves:
+            warnings.append("options_live_requested_without_supported_broker")
+        if self.convexity_live_execution_enabled:
+            warnings.append("convexity_live_requested_without_supported_broker")
         if self.min_depth <= 0:
             warnings.append("min_depth_non_positive")
         if self.poll_interval_seconds <= 0:
             warnings.append("poll_interval_non_positive")
+        if self.portfolio_cycle_interval_seconds <= 0:
+            warnings.append("portfolio_cycle_interval_non_positive")
+        if self.control_panel_port <= 0:
+            warnings.append("control_panel_port_non_positive")
+        if self.total_paper_capital <= 0:
+            warnings.append("total_paper_capital_non_positive")
+        if self.trend_data_mode not in {"auto", "live", "cached"}:
+            warnings.append(f"unknown_trend_data_mode:{self.trend_data_mode}")
+        if self.trend_weight_mode not in {"current", "soft_monotone", "rank_normalized", "gentle_score"}:
+            warnings.append(f"unknown_trend_weight_mode:{self.trend_weight_mode}")
+        if self.trend_min_rebalance_fraction <= 0:
+            warnings.append("trend_min_rebalance_fraction_non_positive")
+        if self.kalshi_data_mode not in {"auto", "live", "cached"}:
+            warnings.append(f"unknown_kalshi_data_mode:{self.kalshi_data_mode}")
+        if self.trend_fetch_retries < 0:
+            warnings.append("trend_fetch_retries_negative")
+        if self.trend_fetch_timeout_seconds <= 0:
+            warnings.append("trend_fetch_timeout_non_positive")
+        if self.kalshi_request_timeout_seconds <= 0:
+            warnings.append("kalshi_request_timeout_non_positive")
+        if self.kalshi_request_retries < 0:
+            warnings.append("kalshi_request_retries_negative")
+        total_weight = self.trend_capital_weight_default + self.kalshi_capital_weight_default
+        if total_weight <= 0:
+            warnings.append("two_sleeve_capital_weight_sum_non_positive")
         if self.enable_event_driven_mode and self.event_poll_interval_seconds <= 0:
             warnings.append("event_poll_interval_non_positive")
         if self.minimum_free_disk_bytes < 0:
@@ -181,3 +300,34 @@ class Settings:
     @property
     def event_rss_urls(self) -> list[str]:
         return [item.strip() for item in self.event_rss_feed_urls.split(",") if item.strip()]
+
+    @property
+    def max_capital_per_strategy(self) -> dict[str, float]:
+        return {
+            "kalshi": self.max_capital_kalshi,
+            "trend": self.max_capital_trend,
+            "options": self.max_capital_options,
+        }
+
+    @property
+    def two_sleeve_capital_weights(self) -> dict[str, float]:
+        return {
+            "trend": self.trend_capital_weight_default,
+            "kalshi_event": self.kalshi_capital_weight_default,
+        }
+
+    @property
+    def trend_symbols(self) -> list[str]:
+        return [item.strip().upper() for item in self.trend_symbols_raw.split(",") if item.strip()]
+
+    @property
+    def live_enabled_sleeves(self) -> list[str]:
+        return self.live_enabled_sleeves_raw
+
+    @property
+    def convexity_macro_event_rows(self) -> list[str]:
+        return [item.strip() for item in self.convexity_macro_events.split(";") if item.strip()]
+
+    @property
+    def convexity_earnings_event_rows(self) -> list[str]:
+        return [item.strip() for item in self.convexity_earnings_events.split(";") if item.strip()]

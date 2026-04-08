@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 from urllib.parse import urlencode
 
@@ -16,6 +17,11 @@ class KalshiRestClient:
         self.session = session or requests.Session()
         self.auth = KalshiAuthAdapter(settings)
         self._warned_data_mode = False
+        self.last_error: str | None = None
+        self.last_error_path: str | None = None
+        session_headers = getattr(self.session, "headers", None)
+        if hasattr(session_headers, "setdefault"):
+            session_headers.setdefault("User-Agent", "arbitrage-machine/0.1")
 
     @property
     def data_only_mode(self) -> bool:
@@ -37,9 +43,28 @@ class KalshiRestClient:
                 raise RuntimeError("kalshi_data_mode_no_auth")
             headers.update(self.auth.build_rest_headers(method, url, body))
         try:
-            response = self.session.request(method, url, data=body or None, headers=headers, timeout=15)
-            response.raise_for_status()
-            return response.json() if response.content else {}
+            for attempt in range(self.settings.kalshi_request_retries + 1):
+                try:
+                    response = self.session.request(
+                        method,
+                        url,
+                        data=body or None,
+                        headers=headers,
+                        timeout=self.settings.kalshi_request_timeout_seconds,
+                    )
+                    response.raise_for_status()
+                    # Clear stale request-failure state after a successful call.
+                    self.last_error = None
+                    self.last_error_path = None
+                    return response.json() if response.content else {}
+                except Exception as exc:
+                    self.last_error = str(exc)
+                    self.last_error_path = path
+                    if attempt >= self.settings.kalshi_request_retries:
+                        if not auth:
+                            return {}
+                        raise
+                    time.sleep(self.settings.kalshi_request_backoff_seconds)
         except Exception:
             if not auth:
                 return {}

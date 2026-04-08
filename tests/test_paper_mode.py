@@ -1,11 +1,14 @@
 import json
+from decimal import Decimal
 from pathlib import Path
 
 from app.config import Settings
 from app.db import Database
+from app.execution.models import SignalLegIntent
 from app.execution.router import ExecutionRouter
+from app.instruments.models import InstrumentRef
 from app.kalshi.rest_client import KalshiRestClient
-from app.models import PortfolioSnapshot, Signal, StrategyEvaluation, StrategyName
+from app.models import PortfolioSnapshot, Signal, SignalEdge, StrategyEvaluation, StrategyName
 from app.persistence.kalshi_repo import KalshiRepository
 from app.persistence.reporting_repo import ReportingRepository
 from app.portfolio.state import PortfolioState
@@ -42,10 +45,11 @@ def test_execution_router_simulates_without_live_submission(tmp_path: Path) -> N
         strategy=StrategyName.CROSS_MARKET,
         ticker="FED-1",
         action="buy_yes",
-        probability_edge=0.03,
-        expected_edge_bps=300,
         quantity=2,
-        legs=[{"ticker": "FED-1", "action": "buy", "side": "yes", "price": 40, "tif": "IOC"}],
+        edge=SignalEdge.from_values(edge_before_fees=0.04, edge_after_fees=0.03, fee_estimate=0.01),
+        source="cross_market_probability_map",
+        confidence=0.8,
+        legs=[SignalLegIntent(InstrumentRef("FED-1", contract_side="yes"), "buy", "limit", Decimal("0.40"), "IOC")],
     )
     assert router.execute_signal(signal)
     kalshi_bundle = reporting_repo.load_kalshi_reporting_bundle()
@@ -75,4 +79,7 @@ def test_reporter_writes_required_report_shape(tmp_path: Path) -> None:
     loaded = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["cumulative"]["total_signals"] == loaded["cumulative"]["total_signals"]
     assert "run_manifest" in loaded
+    assert "execution_report" in loaded
+    assert "execution_truth" in loaded
+    assert "estimated_vs_actual_pnl" not in loaded
     assert set(["this_run", "cumulative", "markets_seen", "markets_filtered_out", "markets_loaded"]).issubset(loaded)

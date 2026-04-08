@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
+from app.market_data.fees import estimate_fee_cents as fixed_point_estimate_fee_cents
+from app.market_data.fees import fee_per_contract as fixed_point_fee_per_contract
 from app.models import OrderBookLevel, OrderBookSnapshot
 
 
@@ -50,11 +54,11 @@ def snapshot_from_orderbook_payload(ticker: str, payload: dict) -> OrderBookSnap
 
 
 def estimate_fee_cents(price_cents: int, contracts: int) -> int:
-    return max(1, int(round(0.035 * price_cents * contracts / 100.0 + 0.07 * contracts)))
+    return fixed_point_estimate_fee_cents(price_cents, contracts)
 
 
 def fee_per_contract(price_cents: int, contracts: int = 1) -> float:
-    return estimate_fee_cents(price_cents, contracts) / max(contracts, 1) / 100.0
+    return fixed_point_fee_per_contract(price_cents, contracts)
 
 
 def best_quotes_in_cents(snapshot: OrderBookSnapshot | None) -> dict[str, int | None]:
@@ -84,4 +88,4 @@ def best_quotes_in_cents(snapshot: OrderBookSnapshot | None) -> dict[str, int | 
 def _price_to_cents(price: float | None) -> int | None:
     if price is None:
         return None
-    return int(round(price * 100))
+    return int((Decimal(str(price)) * Decimal("100")).to_integral_value())

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from datetime import datetime, timezone
 
-from app.market_data.orderbook import estimate_fee_cents
+from app.market_data.fees import balance_aligned_fee_dollars, edge_threshold
 from app.market_data.service import MarketDataService
 from app.persistence.contracts import MonotonicityObservationRecord
 from app.persistence.kalshi_repo import KalshiRepository
 
 
 def build_monotonicity_observation(signal) -> MonotonicityObservationRecord:
-    metadata = dict(signal.metadata)
     accepted_at = signal.ts.isoformat()
-    lower = metadata.get("lower", signal.ticker)
-    higher = metadata.get("higher", signal.ticker)
+    lower = signal.legs[0].instrument.symbol if signal.legs else signal.ticker
+    higher = signal.legs[1].instrument.symbol if len(signal.legs) > 1 else signal.ticker
     product_family = lower.split("-")[0]
     return MonotonicityObservationRecord(
         signal_key=f"{accepted_at}:{lower}:{higher}",
@@ -22,12 +22,12 @@ def build_monotonicity_observation(signal) -> MonotonicityObservationRecord:
         higher_ticker=higher,
         product_family=product_family,
         accepted_at=accepted_at,
-        edge_before_fees=metadata.get("raw_edge", 0.0),
+        edge_before_fees=float(signal.edge.edge_before_fees),
         edge_after_fees=signal.probability_edge,
-        lower_yes_ask_price=metadata.get("lower_yes_ask_price"),
-        lower_yes_ask_size=int(metadata.get("lower_yes_ask_size", 0) or 0),
-        higher_yes_bid_price=metadata.get("higher_yes_bid_price"),
-        higher_yes_bid_size=int(metadata.get("higher_yes_bid_size", 0) or 0),
+        lower_yes_ask_price=signal.legs[0].price_cents if signal.legs else None,
+        lower_yes_ask_size=signal.quantity if signal.legs else 0,
+        higher_yes_bid_price=signal.legs[1].price_cents if len(signal.legs) > 1 else None,
+        higher_yes_bid_size=signal.quantity if len(signal.legs) > 1 else 0,
         next_refresh_status=None,
         next_refresh_observed_at=None,
         time_to_disappear_seconds=None,
@@ -35,10 +35,8 @@ def build_monotonicity_observation(signal) -> MonotonicityObservationRecord:
         latest_observed_at=accepted_at,
         metadata_json={
             "quantity": signal.quantity,
-            "lower_yes_bid_price": metadata.get("lower_yes_bid_price"),
-            "lower_yes_bid_size": metadata.get("lower_yes_bid_size"),
-            "higher_yes_ask_price": metadata.get("higher_yes_ask_price"),
-            "higher_yes_ask_size": metadata.get("higher_yes_ask_size"),
+            "source": signal.source,
+            "confidence": signal.confidence,
             "detection_ts": accepted_at,
         },
     )
@@ -53,9 +51,8 @@ def recheck_monotonicity_signal(
     min_size_multiple: float,
     confirmation_delay_seconds: float,
 ) -> dict:
-    metadata = dict(signal.metadata)
-    lower_ticker = metadata.get("lower", signal.ticker)
-    higher_ticker = metadata.get("higher", signal.ticker)
+    lower_ticker = signal.legs[0].instrument.symbol if signal.legs else signal.ticker
+    higher_ticker = signal.legs[1].instrument.symbol if len(signal.legs) > 1 else signal.ticker
     detection_ts = signal.ts
     if confirmation_delay_seconds > 0:
         time.sleep(confirmation_delay_seconds)
@@ -95,9 +92,8 @@ def followup_monotonicity_signal(
     min_size_multiple: float,
     followup_delay_seconds: float,
 ) -> dict:
-    metadata = dict(signal.metadata)
-    lower_ticker = metadata.get("lower", signal.ticker)
-    higher_ticker = metadata.get("higher", signal.ticker)
+    lower_ticker = signal.legs[0].instrument.symbol if signal.legs else signal.ticker
+    higher_ticker = signal.legs[1].instrument.symbol if len(signal.legs) > 1 else signal.ticker
     detection_ts = signal.ts
     if followup_delay_seconds > 0:
         time.sleep(followup_delay_seconds)
@@ -164,19 +160,19 @@ def evaluate_monotonicity_pair(
     }
     if lower_yes_ask_price_cents is None or higher_yes_bid_price_cents is None:
         return result
-    edge_before_fees = (higher_yes_bid_price_cents - lower_yes_ask_price_cents) / 100.0
-    fees = (
-        estimate_fee_cents(int(lower_yes_ask_price_cents), 1)
-        + estimate_fee_cents(int(higher_yes_bid_price_cents), 1)
-    ) / 100.0
-    edge_after_fees = edge_before_fees - fees - (slippage_buffer_bps / 10_000.0)
-    result["edge_before_fees"] = edge_before_fees
-    result["edge_after_fees"] = edge_after_fees
+    gate = edge_threshold(
+        edge_before_fees=Decimal(higher_yes_bid_price_cents - lower_yes_ask_price_cents) / Decimal("100"),
+        fee_estimate=balance_aligned_fee_dollars(Decimal(lower_yes_ask_price_cents) / Decimal("100"), side="buy")
+        + balance_aligned_fee_dollars(Decimal(higher_yes_bid_price_cents) / Decimal("100"), side="sell"),
+        execution_buffer=Decimal(str(slippage_buffer_bps)) / Decimal("10000"),
+    )
+    result["edge_before_fees"] = float(gate.edge_before_fees)
+    result["edge_after_fees"] = float(gate.edge_after_fees)
     if lower_yes_ask_size < min_top_level_depth or higher_yes_bid_size < min_top_level_depth:
         result["reason"] = "insufficient_signal_time_depth"
     elif size_multiple_lower < min_size_multiple or size_multiple_higher < min_size_multiple:
         result["reason"] = "insufficient_size_multiple"
-    elif edge_after_fees * 10_000 < min_edge_bps:
+    elif not gate.passes_bps(min_edge_bps):
         result["reason"] = "edge_below_threshold"
     else:
         result["survived"] = True
@@ -250,13 +246,16 @@ def monotonicity_quote_status(lower, higher, observation: MonotonicityObservatio
     }
     if current_low_price is None or current_high_price is None:
         return "gone", metadata
-    raw_edge = (current_high_price - current_low_price) / 100.0
-    fees = (estimate_fee_cents(int(current_low_price), 1) + estimate_fee_cents(int(current_high_price), 1)) / 100.0
-    adjusted_edge = raw_edge - fees - (slippage_buffer_bps / 10_000.0)
-    metadata.update({"current_raw_edge": raw_edge, "current_edge_after_fees": adjusted_edge})
+    gate = edge_threshold(
+        edge_before_fees=Decimal(str(current_high_price - current_low_price)) / Decimal("100"),
+        fee_estimate=balance_aligned_fee_dollars(Decimal(str(current_low_price)) / Decimal("100"), side="buy")
+        + balance_aligned_fee_dollars(Decimal(str(current_high_price)) / Decimal("100"), side="sell"),
+        execution_buffer=Decimal(str(slippage_buffer_bps)) / Decimal("10000"),
+    )
+    metadata.update({"current_raw_edge": float(gate.edge_before_fees), "current_edge_after_fees": float(gate.edge_after_fees)})
     if current_low_size < min_top_level_depth or current_high_size < min_top_level_depth:
         return "partially_present", metadata
-    if adjusted_edge * 10_000 >= min_edge_bps:
+    if gate.passes_bps(min_edge_bps):
         return "still_present", metadata
     return "partially_present", metadata
 

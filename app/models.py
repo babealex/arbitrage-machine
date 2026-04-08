@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+from decimal import Decimal
 from enum import Enum
+from typing import TYPE_CHECKING
 
+from app.core.money import to_decimal
+from app.core.time import utc_now
 
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+if TYPE_CHECKING:
+    from app.execution.models import SignalLegIntent
 
 
 class Side(str, Enum):
@@ -19,6 +23,7 @@ class StrategyName(str, Enum):
     PARTITION = "partition"
     CROSS_MARKET = "cross_market"
     MOMENTUM = "momentum"
+    EVENT_DRIVEN = "event_driven"
 
 
 @dataclass(slots=True)
@@ -95,17 +100,72 @@ class ExternalDistribution:
     metadata: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class SignalEdge:
+    edge_before_fees: Decimal
+    edge_after_fees: Decimal
+    fee_estimate: Decimal = Decimal("0")
+    execution_buffer: Decimal = Decimal("0")
+
+    @property
+    def expected_edge_bps(self) -> Decimal:
+        return self.edge_after_fees * Decimal("10000")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "edge_before_fees": str(self.edge_before_fees),
+            "edge_after_fees": str(self.edge_after_fees),
+            "fee_estimate": str(self.fee_estimate),
+            "execution_buffer": str(self.execution_buffer),
+            "expected_edge_bps": str(self.expected_edge_bps),
+        }
+
+    @classmethod
+    def from_values(
+        cls,
+        *,
+        edge_before_fees: Decimal | str | int | float,
+        edge_after_fees: Decimal | str | int | float,
+        fee_estimate: Decimal | str | int | float = 0,
+        execution_buffer: Decimal | str | int | float = 0,
+    ) -> "SignalEdge":
+        return cls(
+            edge_before_fees=to_decimal(edge_before_fees),
+            edge_after_fees=to_decimal(edge_after_fees),
+            fee_estimate=to_decimal(fee_estimate),
+            execution_buffer=to_decimal(execution_buffer),
+        )
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, object]) -> "SignalEdge":
+        return cls.from_values(
+            edge_before_fees=payload.get("edge_before_fees", 0),
+            edge_after_fees=payload.get("edge_after_fees", 0),
+            fee_estimate=payload.get("fee_estimate", 0),
+            execution_buffer=payload.get("execution_buffer", 0),
+        )
+
+
 @dataclass(slots=True)
 class Signal:
     strategy: StrategyName
     ticker: str
     action: str
-    probability_edge: float
-    expected_edge_bps: float
     quantity: int
-    legs: list[dict] = field(default_factory=list)
-    metadata: dict = field(default_factory=dict)
+    edge: SignalEdge
+    source: str
+    confidence: float
+    priority: int = 0
+    legs: list["SignalLegIntent"] = field(default_factory=list)
     ts: datetime = field(default_factory=utc_now)
+
+    @property
+    def probability_edge(self) -> float:
+        return float(self.edge.edge_after_fees)
+
+    @property
+    def expected_edge_bps(self) -> float:
+        return float(self.edge.expected_edge_bps)
 
 
 @dataclass(slots=True)
@@ -120,17 +180,6 @@ class StrategyEvaluation:
     quantity: int
     metadata: dict = field(default_factory=dict)
     ts: datetime = field(default_factory=utc_now)
-
-
-@dataclass(slots=True)
-class OrderIntent:
-    ticker: str
-    side: Side
-    action: str
-    quantity: int
-    price: int
-    time_in_force: str
-    client_order_id: str
 
 
 @dataclass(slots=True)

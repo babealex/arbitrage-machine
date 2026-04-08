@@ -12,6 +12,7 @@ from app.events.bus import InProcessEventBus
 from app.events.models import ClassifiedEvent, ConfirmationResult, NewsItem, TradeIdea
 from app.execution.broker import MarketProxyBook, PaperBroker, PriceSnapshot
 from app.execution.event_engine import EventExecutionEngine
+from app.execution.router import ExecutionRouter
 from app.ingestion.newsapi import NewsApiSource
 from app.ingestion.rss import RSSNewsSource
 from app.ingestion.service import NewsIngestionService
@@ -20,9 +21,13 @@ from app.logging_setup import setup_logging
 from app.mapping.engine import EventTradeMapper
 from app.persistence.contracts import ClassifiedEventRecord, NewsEventRecord, TradeCandidateRecord
 from app.persistence.event_repo import EventRepository
+from app.persistence.kalshi_repo import KalshiRepository
+from app.persistence.market_state_repo import MarketStateRepository
 from app.persistence.reporting_repo import ReportingRepository
 from app.reporting import PaperTradingReporter, build_event_run_manifest
 from app.risk.event_risk import EventRiskManager
+from app.risk.manager import RiskManager
+from app.portfolio.state import PortfolioState
 
 
 CONFIRMATION_SYMBOLS = ["SPY", "QQQ", "TLT", "BTC-USD", "^VIX", "CL=F", "XLE", "UUP"]
@@ -52,7 +57,9 @@ def run_event_driven(settings: Settings) -> None:
     )
     db = Database(settings.db_path)
     repo = EventRepository(db)
+    signal_repo = KalshiRepository(db)
     reporting_repo = ReportingRepository(db)
+    market_state_repo = MarketStateRepository(db)
     reporter = PaperTradingReporter(reporting_repo, settings.report_path, run_manifest=build_event_run_manifest(settings))
     bus = InProcessEventBus()
     ingestion = NewsIngestionService(
@@ -81,7 +88,16 @@ def run_event_driven(settings: Settings) -> None:
         session_boundary_spread_multiplier=settings.event_paper_session_boundary_spread_multiplier,
     )
     risk = EventRiskManager(settings.event_paper_starting_capital, settings.event_max_risk_per_trade_pct, settings.event_stop_loss_pct)
-    execution = EventExecutionEngine(repo, broker)
+    execution_router = ExecutionRouter(
+        None,
+        signal_repo,
+        PortfolioState(None),
+        RiskManager(1.0, 10.0, 10.0, 10, logger=logger),
+        logger,
+        False,
+        market_state_repo=market_state_repo,
+    )
+    execution = EventExecutionEngine(repo, signal_repo, broker, execution_router)
     cycle_stats = {
         "news_items_seen": 0,
         "new_events_persisted": 0,

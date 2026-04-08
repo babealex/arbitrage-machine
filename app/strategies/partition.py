@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from app.market_data.orderbook import estimate_fee_cents
-from app.models import Market, Signal, StrategyEvaluation, StrategyName
+from decimal import Decimal
+
+from app.execution.models import SignalLegIntent
+from app.instruments.models import InstrumentRef
+from app.market_data.fees import balance_aligned_fee_dollars, edge_threshold
+from app.models import Market, Signal, SignalEdge, StrategyEvaluation, StrategyName
 from app.strategies.base import Strategy
 
 
@@ -90,9 +94,13 @@ class PartitionStrategy(Strategy):
                 )
             ]
         summed = metadata["summed_probability_tradeable_legs"]
-        fee_cost = sum(estimate_fee_cents(int(market.yes_ask), 1) for market in markets) / 100.0
-        adjusted_edge = 1.0 - summed - fee_cost - (self.slippage_buffer_bps / 10_000.0)
-        edge_bps = adjusted_edge * 10_000
+        fee_cost = sum(float(balance_aligned_fee_dollars(Decimal(market.yes_ask) / Decimal("100"), side="buy")) for market in markets)
+        gate = edge_threshold(
+            edge_before_fees=Decimal(str(1.0 - summed)),
+            fee_estimate=Decimal(str(fee_cost)),
+            execution_buffer=Decimal(str(self.slippage_buffer_bps)) / Decimal("10000"),
+        )
+        edge_bps = float(gate.edge_after_fees * Decimal("10000"))
         max_price = max((market.yes_ask or 0) / 100.0 for market in markets)
         qty = self.size_from_equity(equity, self.max_position_pct, max_price)
         if qty < self.min_depth:
@@ -102,23 +110,23 @@ class PartitionStrategy(Strategy):
                     ticker=event_ticker,
                     generated=False,
                     reason="insufficient_depth",
-                    edge_before_fees=1.0 - summed,
-                    edge_after_fees=adjusted_edge,
-                    fee_estimate=fee_cost,
+                    edge_before_fees=float(gate.edge_before_fees),
+                    edge_after_fees=float(gate.edge_after_fees),
+                    fee_estimate=float(gate.fee_estimate),
                     quantity=qty,
                     metadata=metadata,
                 )
             ]
-        if edge_bps < self.min_edge_bps:
+        if not gate.passes_bps(self.min_edge_bps):
             return [], [
                 StrategyEvaluation(
                     strategy=StrategyName.PARTITION,
                     ticker=event_ticker,
                     generated=False,
                     reason="edge_below_threshold",
-                    edge_before_fees=1.0 - summed,
-                    edge_after_fees=adjusted_edge,
-                    fee_estimate=fee_cost,
+                    edge_before_fees=float(gate.edge_before_fees),
+                    edge_after_fees=float(gate.edge_after_fees),
+                    fee_estimate=float(gate.fee_estimate),
                     quantity=qty,
                     metadata=metadata,
                 )
@@ -127,23 +135,35 @@ class PartitionStrategy(Strategy):
                 strategy=StrategyName.PARTITION,
                 ticker=event_ticker,
                 action="buy_partition",
-                probability_edge=adjusted_edge,
-                expected_edge_bps=edge_bps,
                 quantity=qty,
+                edge=SignalEdge.from_values(
+                    edge_before_fees=gate.edge_before_fees,
+                    edge_after_fees=gate.edge_after_fees,
+                    fee_estimate=gate.fee_estimate,
+                    execution_buffer=Decimal(str(self.slippage_buffer_bps)) / Decimal("10000"),
+                ),
+                source="partition_cover",
+                confidence=1.0,
+                priority=1,
                 legs=[
-                    {"ticker": market.ticker, "action": "buy", "side": "yes", "price": int(market.yes_ask), "tif": "FOK"}
+                    SignalLegIntent(
+                        instrument=InstrumentRef(symbol=market.ticker, contract_side="yes"),
+                        side="buy",
+                        order_type="limit",
+                        limit_price=Decimal(int(market.yes_ask)) / Decimal("100"),
+                        time_in_force="FOK",
+                    )
                     for market in markets
                 ],
-                metadata=metadata,
             )
         evaluation = StrategyEvaluation(
             strategy=StrategyName.PARTITION,
             ticker=event_ticker,
             generated=True,
             reason="signal_generated",
-            edge_before_fees=1.0 - summed,
-            edge_after_fees=adjusted_edge,
-            fee_estimate=fee_cost,
+            edge_before_fees=float(gate.edge_before_fees),
+            edge_after_fees=float(gate.edge_after_fees),
+            fee_estimate=float(gate.fee_estimate),
             quantity=qty,
             metadata=metadata,
         )

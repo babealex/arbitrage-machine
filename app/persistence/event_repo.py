@@ -6,7 +6,6 @@ from app.db import Database, _json_load
 from app.persistence.contracts import (
     ClassifiedEventRecord,
     EventEntryQueueRecord,
-    EventPaperExecutionAuditRecord,
     EventPositionRecord,
     EventTradeOutcomeRecord,
     NewsEventRecord,
@@ -203,28 +202,15 @@ class EventRepository:
             ),
         )
 
-    def persist_event_paper_execution_audit(self, item: EventPaperExecutionAuditRecord) -> int:
-        return self.db.execute_insert(
+    def load_recent_trade_candidates(self, *, lookback_hours: int = 72) -> list[dict]:
+        rows = self.db.fetchall(
             """
-            INSERT INTO event_paper_execution_audit(
-                queue_id, position_id, symbol, side, requested_quantity, filled_quantity,
-                remaining_quantity, order_style, status, decision_state, event_timestamp_utc,
-                price, metadata_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT tc.*, ce.directional_bias, ce.severity, ce.metadata_json AS classified_metadata_json
+            FROM trade_candidates tc
+            LEFT JOIN classified_events ce ON ce.id = tc.classified_event_id
+            WHERE tc.created_at >= datetime('now', ?)
+            ORDER BY tc.created_at DESC, tc.id DESC
             """,
-            (
-                item.queue_id,
-                item.position_id,
-                item.symbol,
-                item.side,
-                item.requested_quantity,
-                item.filled_quantity,
-                item.remaining_quantity,
-                item.order_style,
-                item.status,
-                item.decision_state,
-                item.event_timestamp_utc,
-                item.price,
-                json.dumps(item.metadata_json),
-            ),
+            (f"-{int(lookback_hours)} hours",),
         )
+        return [dict(row) for row in rows]

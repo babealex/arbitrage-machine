@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.execution.models import ExecutionOutcome
 from app.kalshi.rest_client import KalshiRestClient
 from app.models import Fill, PortfolioSnapshot, Position, Side
 from app.persistence.kalshi_repo import KalshiRepository
@@ -52,6 +53,8 @@ class PortfolioState:
         if repo is not None:
             repo.replace_positions(self.snapshot)
             for raw_fill in fills:
+                outcome = ExecutionOutcome.from_exchange_fill(raw_fill)
+                repo.persist_execution_outcome(outcome)
                 repo.persist_fill(
                     Fill(
                         order_id=str(raw_fill.get("order_id", raw_fill.get("orderId", ""))),

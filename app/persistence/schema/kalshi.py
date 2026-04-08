@@ -6,9 +6,14 @@ CREATE TABLE IF NOT EXISTS signals (
     action TEXT NOT NULL,
     probability_edge REAL NOT NULL,
     expected_edge_bps REAL NOT NULL,
+    probability_edge_decimal TEXT,
+    expected_edge_bps_decimal TEXT,
+    edge_details TEXT,
+    source TEXT,
+    confidence REAL,
+    priority INTEGER,
     quantity INTEGER NOT NULL,
     legs TEXT NOT NULL,
-    metadata TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS strategy_evaluations (
@@ -20,18 +25,28 @@ CREATE TABLE IF NOT EXISTS strategy_evaluations (
     edge_before_fees REAL NOT NULL,
     edge_after_fees REAL NOT NULL,
     fee_estimate REAL NOT NULL,
+    edge_before_fees_decimal TEXT,
+    edge_after_fees_decimal TEXT,
+    fee_estimate_decimal TEXT,
     quantity INTEGER NOT NULL,
     metadata TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS orders (
     client_order_id TEXT PRIMARY KEY,
+    venue TEXT,
     ticker TEXT NOT NULL,
+    contract_side TEXT,
     side TEXT NOT NULL,
     action TEXT NOT NULL,
     quantity INTEGER NOT NULL,
+    quantity_decimal TEXT,
     price INTEGER NOT NULL,
+    limit_price_decimal TEXT,
     tif TEXT NOT NULL,
+    order_type TEXT,
+    strategy_name TEXT,
+    signal_ref TEXT,
     status TEXT NOT NULL,
     metadata TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -40,12 +55,19 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS order_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_order_id TEXT NOT NULL,
+    venue TEXT,
     ticker TEXT NOT NULL,
+    contract_side TEXT,
     side TEXT NOT NULL,
     action TEXT NOT NULL,
     quantity INTEGER NOT NULL,
+    quantity_decimal TEXT,
     price INTEGER NOT NULL,
+    limit_price_decimal TEXT,
     tif TEXT NOT NULL,
+    order_type TEXT,
+    strategy_name TEXT,
+    signal_ref TEXT,
     status TEXT NOT NULL,
     metadata TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -57,6 +79,25 @@ CREATE TABLE IF NOT EXISTS fills (
     quantity INTEGER NOT NULL,
     price INTEGER NOT NULL,
     side TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS execution_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_order_id TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    contract_side TEXT,
+    side TEXT NOT NULL,
+    action TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_quantity INTEGER NOT NULL,
+    requested_quantity_decimal TEXT,
+    filled_quantity INTEGER NOT NULL,
+    filled_quantity_decimal TEXT,
+    price_cents INTEGER,
+    tif TEXT NOT NULL,
+    is_flatten INTEGER NOT NULL,
+    metadata TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS positions (
@@ -71,6 +112,9 @@ CREATE TABLE IF NOT EXISTS pnl_snapshots (
     equity REAL NOT NULL,
     cash REAL NOT NULL,
     daily_pnl REAL NOT NULL,
+    equity_decimal TEXT,
+    cash_decimal TEXT,
+    daily_pnl_decimal TEXT,
     payload TEXT NOT NULL,
     created_at TEXT NOT NULL
 );

@@ -13,7 +13,7 @@ def test_build_ladders_sorts_by_strike() -> None:
 
 
 def test_monotonicity_detects_invalid_ordering() -> None:
-    strategy = MonotonicityStrategy(min_edge_bps=10, slippage_buffer_bps=0, max_position_pct=0.02)
+    strategy = MonotonicityStrategy(min_edge_bps=10, slippage_buffer_bps=0, max_position_pct=0.02, min_size_multiple=1.0)
     ladder = [
         Market(
             ticker="A-200",
@@ -33,7 +33,7 @@ def test_monotonicity_detects_invalid_ordering() -> None:
             subtitle="300",
             status="open",
             yes_ask=52,
-            yes_bid=55,
+            yes_bid=75,
             strike=300,
             metadata={"quote_diagnostics": {"best_yes_ask_size": 50, "best_yes_bid_size": 50, "orderbook_snapshot_exists": True}},
         ),

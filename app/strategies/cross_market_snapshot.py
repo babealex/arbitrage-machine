@@ -116,7 +116,7 @@ def midpoint_probability(market: Market) -> float | None:
 def compute_disagreement_score(probability: float, risk_score: float) -> float:
     probability = max(0.0, min(1.0, probability))
     risk_score = max(0.0, min(1.0, risk_score))
-    return abs(probability - risk_score)
+    return round(abs(probability - risk_score), 10)
 
 
 def _latest_pct_change(history: deque[float]) -> float:
