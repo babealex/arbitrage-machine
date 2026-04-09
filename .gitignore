@@ -20,3 +20,13 @@ orchestrator-bot/logs/
 dist/
 build/
 *.egg-info/
+
+# Local scratch and manual validation artifacts
+manual-test-harness*/
+tmp_*/
+tmp*/
+.tmp-*/
+.tmp-tests/
+pytest-cache-files-*/
+zztemp*/
+tmp_options_system.txt
